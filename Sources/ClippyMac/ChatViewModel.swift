@@ -618,6 +618,13 @@ final class ChatViewModel: ObservableObject {
     /// bounds that so a genuinely stuck task still stops instead of retrying
     /// forever.
     private static let maxConsecutiveFailures = 3
+    /// A model proposing the same action it just took — even one it
+    /// succeeded at — twice in a row means re-observing isn't changing its
+    /// mind, usually because it's judging from a screenshot taken before the
+    /// previous action's effect (a page load, an animation) actually
+    /// finished. Screenshotting and asking a third time won't fix that;
+    /// stopping and surfacing it beats silently looping to the step cap.
+    private static let maxConsecutiveRepeats = 2
 
     private func executeScreenPlan(_ plan: PendingScreenPlan) async {
         isRunningScreenPlan = true
@@ -629,7 +636,9 @@ final class ChatViewModel: ObservableObject {
         let summary = plan.summary
         var stoppedEarly = false
         var consecutiveFailures = 0
+        var consecutiveRepeats = 0
         var lastFailureReason: String?
+        var stalledOnRepeat = false
 
         while let step = nextStep, executedSteps.count < ScreenPlanRunner.stepLimit {
             guard !Task.isCancelled else {
@@ -677,16 +686,39 @@ final class ChatViewModel: ObservableObject {
                 ScreenAwarenessService.shared.dismissHighlight()
                 announce("Clippy stopped after retrying \(consecutiveFailures) times. \(lastFailureReason ?? "")")
                 finishActivity(message: "I tried a few approaches and got stuck — check the step I flagged.")
+                postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stuck after repeated failures")
                 isRunningScreenPlan = false
                 return
             }
 
-            nextStep = await decideNextStep(afterAttempting: step, goal: summary, failureReason: failureReason)
+            // Give the action's effect time to actually land before judging
+            // it from a screenshot — a page navigation especially. Without
+            // this, the very next capture can catch a still-loading page and
+            // the model concludes nothing happened, retyping the same thing.
+            let settleMillis = (step.action == .type && step.pressReturnAfter == true) ? 1400 : 500
+            try? await Task.sleep(for: .milliseconds(settleMillis))
+
+            let proposed = await decideNextStep(afterAttempting: step, goal: summary, failureReason: failureReason)
+            if let proposed, Self.isEquivalentAction(proposed, step) {
+                consecutiveRepeats += 1
+            } else {
+                consecutiveRepeats = 0
+            }
+            if consecutiveRepeats >= Self.maxConsecutiveRepeats {
+                stalledOnRepeat = true
+                break
+            }
+            nextStep = proposed
         }
 
         ScreenAwarenessService.shared.dismissHighlight()
         if stoppedEarly {
             screenStatus = "Plan stopped."
+        } else if stalledOnRepeat {
+            screenStatus = "Stopped — kept proposing the same step without progress."
+            announce("Clippy stopped. It kept proposing the same step without anything changing.")
+            finishActivity(message: "I got stuck repeating the same step — check what happened and try again.")
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — repeated the same step without progress")
         } else if executedStatuses.last == .failed {
             // The loop exited because the model, after seeing the failure and
             // a fresh screenshot, couldn't find another way forward — not
@@ -696,13 +728,48 @@ final class ChatViewModel: ObservableObject {
             screenStatus = "Stopped — couldn't find a safe way to continue."
             announce("Clippy stopped. \(lastFailureReason ?? "It couldn't find a safe way to continue.")")
             finishActivity(message: "I got stuck and couldn't finish — check the step I flagged.")
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — couldn't find a safe way to continue")
         } else {
             pendingScreenPlan = nil
             screenPlanStatuses = []
             screenStatus = "Ran \(executedSteps.count) step\(executedSteps.count == 1 ? "" : "s") without submitting."
             finishActivity(message: "Done — I ran the whole sequence and stopped before submitting.")
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: nil)
         }
         isRunningScreenPlan = false
+    }
+
+    /// Ignores `id` (regenerated fresh on every decode, so it can never
+    /// match across separately-parsed steps) and pixel-level x/y jitter —
+    /// what matters for loop detection is "is this the same action again,"
+    /// not exact coordinates.
+    private static func isEquivalentAction(_ a: ScreenPlanStep, _ b: ScreenPlanStep) -> Bool {
+        a.action == b.action && a.target == b.target && a.text == b.text
+            && a.app == b.app && a.key == b.key
+    }
+
+    /// Posts a permanent, readable record of what actually ran to the chat
+    /// transcript — the live banner is transient UI (cleared or replaced by
+    /// the next plan), and the compact balloon in particular has no room to
+    /// show a long step list without cutting it off.
+    private func postStepHistory(
+        _ steps: [ScreenPlanStep],
+        statuses: [ScreenPlanStepStatus],
+        goal: String,
+        outcomeNote: String?
+    ) {
+        guard !steps.isEmpty else { return }
+        var lines = ["**\(goal)**"]
+        for (index, step) in steps.enumerated() {
+            let status = statuses.indices.contains(index) ? statuses[index] : .pending
+            let mark = status == .done ? "✓" : (status == .failed ? "✗" : "•")
+            lines.append("\(mark) \(index + 1). \(step.displayText)")
+        }
+        if let outcomeNote {
+            lines.append("\n_\(outcomeNote.prefix(1).capitalized + outcomeNote.dropFirst())._")
+        }
+        messages.append(ChatMessage(role: .assistant, content: lines.joined(separator: "\n")))
+        persistMessages()
     }
 
     /// A standalone, unpersisted follow-up call — it isn't appended to

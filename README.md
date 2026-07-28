@@ -1,39 +1,81 @@
-# Clippy for macOS
+<div align="center">
+  <img src="Resources/ClippyIcon.png" width="140" alt="Clippy icon" />
 
-A native macOS desktop assistant that lets people chat through their existing
-Claude Code or Codex login, or use their own OpenAI/Anthropic API key.
+  # Clippy for macOS
 
-## Features
+  **He's back. He can see your screen this time.**
 
-- Claude Code subscription/login through the local `claude` CLI
-- Codex subscription/login through the local `codex` CLI
-- OpenAI and Anthropic API modes
-- API keys stored in macOS Keychain
-- Spoken replies and microphone dictation
-- Original portfolio Clippy sprite artwork with context-aware animations
-- Classic Office-style balloon above the floating character
-- Inline compact replies that do not force open the full conversation
-- Live provider-aware work stages, elapsed time, and accessible status announcements
-- Compact questions receive short plain-text answers; full chat receives detailed Markdown
-- Streamlined expanded-chat header with a smaller Clippy and clearer controls
-- Compact action center for opening trusted apps and common folders
-- Local Codex and Claude session discovery with explicit resume-in-Terminal actions
-- Accessibility-powered “write here” requests that insert finished text into the last focused editable field
-- Opt-in screen awareness that combines a live window capture with precise Accessibility control geometry
-- Yellow “show me” highlights plus confirmed multi-step plans that can navigate, re-scan, find a field, and insert text
-- Full step review before a plan runs; Send, Submit, payment, deletion, agreement, and password actions are blocked
-- Secure fields are refused, and Clippy never presses Send or Submit on the user’s behalf
-- Contextual answer actions for copying results and opening cited links
-- Static message portraits and non-animated auto-scroll for smoother conversations
-- True request cancellation for API calls and local Claude Code/Codex processes
-- Calm completion, retry, and error-recovery states
-- Explicit expand control for the complete chat window
-- Compact-balloon attachments for images, PDFs, and text/code files
-- Paste images or file URLs directly into compact or expanded chat with Command-V
-- Portfolio-matched smooth sprite rendering and compact Segoe-style controls
-- Persistent conversation history
-- Optional always-on-top window
-- Codex CLI runs in read-only mode
+  A native macOS desktop assistant — chat through your existing Claude Code
+  or Codex login, or your own OpenAI/Anthropic API key — that can look at
+  your screen, click, and type, with a paperclip's face on it.
+
+  ![platform](https://img.shields.io/badge/platform-macOS%2014%2B-black?logo=apple)
+  ![swift](https://img.shields.io/badge/swift-5.10-F05138?logo=swift&logoColor=white)
+  ![universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue)
+</div>
+
+<br>
+
+<div align="center">
+  <img src="Resources/ClippySprites.png" width="640" alt="Clippy sprite sheet" />
+  <br>
+  <sub>Every animation frame Clippy can strike — idle, thinking, talking, listening, success, alert.</sub>
+</div>
+
+## What it actually does
+
+Clippy sits as a small floating character on your desktop. Ask it something
+and it answers in a compact speech balloon, or open the full chat for longer
+conversations, spoken replies, and file attachments — the classic assistant
+experience, minus the 90s bugs.
+
+The part that's new: when you ask it to *do* something on screen, it doesn't
+just describe the steps back to you. It takes a screenshot, reads the
+accessibility tree of whatever's in front of you, and acts:
+
+- **Sees your screen on every request** — a fresh screenshot and an
+  accessibility scan (control labels, roles, positions) go to the model with
+  every message, so it can reason about what's actually in front of you
+  instead of guessing.
+- **Plans and re-plans, one step at a time** — Clippy doesn't build a
+  10-step plan up front and run it blind. It runs one action, takes a new
+  screenshot, and asks "given what just happened, what's next?" A screen
+  rarely matches a prediction exactly — this is how Clippy notices.
+- **Retries on its own** — a failed step (wrong label, a menu that opened
+  somewhere else) triggers an automatic retry from a fresh screenshot,
+  bounded to a few consecutive attempts before it stops and asks you.
+- **Clicks and types by coordinate when labels can't be trusted** — browser
+  address bars are the classic case: their accessibility label varies by
+  version, and a page can have a look-alike search box with the exact same
+  placeholder text sitting right next to the real one. Clippy can click the
+  literal pixel it sees in the screenshot instead of gambling on a label
+  match.
+- **Aware of what's already open** — before launching a fresh app instance,
+  it checks what's already running and prefers switching to it.
+- **Shows its work** — every plan runs through a live checklist (✓ done,
+  ✗ failed, • pending) and, once it finishes, gets posted to the chat
+  transcript as a permanent record of what actually happened.
+
+## Guardrails
+
+- Every step is validated before it runs: **Send, Submit, publish, buy, pay,
+  delete, accept/agree, sign out, and password/passcode controls are always
+  refused** — this check is unconditional and independent of everything
+  else below.
+- Return is never sent by Clippy, with exactly one exception: submitting a
+  browser's own address/search field (navigating to a URL or running a
+  search). Every other field gets typed into but never submitted — you
+  press Enter yourself.
+- Secure/password fields are refused outright, regardless of what's asked.
+- By default, this build's terminal/agent-CLI blocklist
+  (`AutomationSafety.swift`) is **empty** — Clippy can click and type into
+  Terminal, Warp, iTerm, and similar apps, on the reasoning that everything
+  runs on your own machine and Return still can't be sent there. If you want
+  that restricted again, add bundle identifiers / name fragments back to
+  `blockedBundleIdentifiers` / `blockedNameFragments`.
+- Nothing runs without both **Accessibility** and **Screen & System Audio
+  Recording** permission granted in System Settings — Clippy prompts for
+  both the first time it needs them.
 
 ## Build the DMG
 
@@ -66,6 +108,12 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build
 Then notarize the resulting DMG with your Apple Developer credentials and
 staple the ticket.
 
+Run the test suite with:
+
+```bash
+swift test
+```
+
 ## Provider setup
 
 ### Claude Code
@@ -84,10 +132,15 @@ Select OpenAI API or Anthropic API in Settings, enter a model and API key, then
 click **Save key**. Keys never enter app preferences; they are stored in the
 user's macOS Keychain.
 
-## Screen awareness
+## Other features
 
-Enable both **Accessibility** and **Screen & System Audio Recording** in Clippy
-Settings. Screen captures are created only after an explicit screen-help or
-navigation request and are passed to the selected AI provider for analysis.
-Clippy previews every multi-step action plan before running it and stops before
-any final submission or sensitive control.
+- Spoken replies and microphone dictation
+- Classic Office-style balloon above the floating character, with an expandable full chat window
+- Live provider-aware work stages, elapsed time, and accessible status announcements
+- Compact action center for opening trusted apps and common folders
+- Local Codex and Claude session discovery with explicit resume-in-Terminal actions
+- Contextual answer actions for copying results and opening cited links
+- True request cancellation for API calls and local Claude Code/Codex processes
+- Compact-balloon attachments for images, PDFs, and text/code files — paste images or file URLs directly with Command-V
+- Persistent conversation history
+- Optional always-on-top window

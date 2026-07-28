@@ -359,9 +359,8 @@ final class ScreenAwarenessService {
         // its whole contents, but a synthetic click isn't guaranteed to
         // trigger that app-specific behavior, so leftover text from an
         // earlier attempt at this same field would otherwise get appended to
-        // instead of replaced (e.g. a retry producing "ar9avar9av"). Select
-        // all explicitly so this always replaces.
-        try await selectAll()
+        // instead of replaced (e.g. a retry producing "ar9avar9av").
+        try await clearField()
         _ = try await ScreenTypingService.shared.insert(text)
         if pressReturnAfter, AutomationSafety.isSafeAddressBarSubmit(target: label, text: text) {
             try await pressReturnKey()
@@ -625,20 +624,31 @@ final class ScreenAwarenessService {
         try await Task.sleep(for: .milliseconds(200))
     }
 
-    /// Cmd+A. Used before a coordinate-driven type so the field's existing
-    /// content gets replaced rather than appended to — see the call site in
-    /// `putAtPoint` for why a synthetic click can't be trusted to select
-    /// existing content the way a real click on some fields does.
-    private func selectAll() async throws {
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+    /// Cmd+A then Delete. Used before a coordinate-driven type so the
+    /// field's existing content is actually gone before typing, rather than
+    /// relying on `ScreenTypingService.insert` correctly reading back a
+    /// "selection" this just posted — reading `kAXSelectedTextRangeAttribute`
+    /// immediately after a synthetic Cmd+A is its own race (the app may not
+    /// have updated it yet), and a select-without-delete that loses that
+    /// race silently degrades back to an append at the cursor instead of a
+    /// replace — exactly what produced "ar9avar9av". Actually emptying the
+    /// field removes the dependency on that race entirely: insert() then has
+    /// nothing to append to.
+    private func clearField() async throws {
+        guard let selectDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+              let selectUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false),
+              let deleteDown = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true),
+              let deleteUp = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: false) else {
             return
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(80))
+        selectDown.flags = .maskCommand
+        selectUp.flags = .maskCommand
+        selectDown.post(tap: .cghidEventTap)
+        selectUp.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(150))
+        deleteDown.post(tap: .cghidEventTap)
+        deleteUp.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(150))
     }
 
     /// Re-scan immediately before writing a drafted reply. Web apps frequently

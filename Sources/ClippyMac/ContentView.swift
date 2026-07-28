@@ -824,19 +824,31 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 5) {
-                ForEach(Array(plan.steps.enumerated()), id: \.element.id) { index, step in
-                    let status = viewModel.screenPlanStatuses.indices.contains(index)
-                        ? viewModel.screenPlanStatuses[index]
-                        : .pending
-                    HStack(alignment: .top, spacing: 7) {
-                        stepMarker(index: index, status: status)
-                        Text(step.displayText)
-                            .font(.caption)
-                            .foregroundStyle(status == .done ? .secondary : .primary)
-                            .strikethrough(status == .done)
-                            .textSelection(.enabled)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(Array(plan.steps.enumerated()), id: \.element.id) { index, step in
+                            let status = viewModel.screenPlanStatuses.indices.contains(index)
+                                ? viewModel.screenPlanStatuses[index]
+                                : .pending
+                            HStack(alignment: .top, spacing: 7) {
+                                stepMarker(index: index, status: status)
+                                Text(step.displayText)
+                                    .font(.caption)
+                                    .foregroundStyle(status == .done ? .secondary : .primary)
+                                    .strikethrough(status == .done)
+                                    .textSelection(.enabled)
+                            }
+                            .id(index)
+                        }
                     }
+                }
+                // A running task can easily produce more steps than fit —
+                // scroll internally past this height instead of growing the
+                // banner until it crowds out the Stop/Run controls below it.
+                .frame(maxHeight: 160)
+                .onChange(of: plan.steps.count) { _, _ in
+                    withAnimation { scrollProxy.scrollTo(plan.steps.count - 1, anchor: .bottom) }
                 }
             }
 
