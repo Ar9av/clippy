@@ -71,6 +71,151 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     }
 }
 
+struct ArchivedChatSession: Identifiable, Codable, Equatable {
+    let id: UUID
+    let endedAt: Date
+    let messages: [ChatMessage]
+
+    init(id: UUID = UUID(), endedAt: Date = Date(), messages: [ChatMessage]) {
+        self.id = id
+        self.endedAt = endedAt
+        self.messages = messages
+    }
+
+    var title: String {
+        messages.first(where: { $0.role == .user })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\n").first.map(String.init)
+            ?? "Conversation"
+    }
+
+    var preview: String {
+        let title = self.title
+        return title.count > 80 ? String(title.prefix(80)) + "…" : title
+    }
+}
+
+enum ScreenPlanAction: String, Codable {
+    case click
+    case type
+    case wait
+    /// Bring another app to the front so later steps act on its windows.
+    case open
+    /// Press one navigation key. Deliberately excludes Return: Clippy moves
+    /// through an interface but never commits the form at the end of it.
+    case key
+}
+
+/// The only keystrokes a plan may send. Anything that could submit, delete, or
+/// confirm is absent by construction rather than filtered later.
+enum ScreenPlanKey: String, Codable, CaseIterable {
+    case tab
+    case escape
+    case up
+    case down
+    case left
+    case right
+
+    var displayName: String {
+        switch self {
+        case .tab: "Tab"
+        case .escape: "Escape"
+        case .up: "Up arrow"
+        case .down: "Down arrow"
+        case .left: "Left arrow"
+        case .right: "Right arrow"
+        }
+    }
+
+    /// Virtual key codes, from `Carbon/Events.h`.
+    var keyCode: UInt16 {
+        switch self {
+        case .tab: 48
+        case .escape: 53
+        case .left: 123
+        case .right: 124
+        case .down: 125
+        case .up: 126
+        }
+    }
+}
+
+/// Where a step got to. Drives the live checklist in the plan banner, so a
+/// long sequence shows what already ran and exactly where it stopped.
+enum ScreenPlanStepStatus: String, Codable, Equatable {
+    case pending
+    case running
+    case done
+    case failed
+    case skipped
+}
+
+struct ScreenPlanStep: Identifiable, Codable, Equatable {
+    let id = UUID()
+    let action: ScreenPlanAction
+    let target: String?
+    let text: String?
+    let seconds: Double?
+    let app: String?
+    let key: ScreenPlanKey?
+
+    init(
+        action: ScreenPlanAction,
+        target: String? = nil,
+        text: String? = nil,
+        seconds: Double? = nil,
+        app: String? = nil,
+        key: ScreenPlanKey? = nil
+    ) {
+        self.action = action
+        self.target = target
+        self.text = text
+        self.seconds = seconds
+        self.app = app
+        self.key = key
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case action
+        case target
+        case text
+        case seconds
+        case app
+        case key
+    }
+
+    var displayText: String {
+        switch action {
+        case .click:
+            "Click “\(target ?? "control")”"
+        case .type:
+            "Put “\(text ?? "")” into “\(target ?? "field")”"
+        case .wait:
+            "Wait \(String(format: "%.1f", seconds ?? 0.8)) seconds"
+        case .open:
+            "Switch to \(app ?? "the app")"
+        case .key:
+            "Press \(key?.displayName ?? "a key")"
+        }
+    }
+}
+
+struct PendingScreenPlan: Identifiable, Codable, Equatable {
+    let id = UUID()
+    let summary: String
+    let steps: [ScreenPlanStep]
+
+    init(summary: String, steps: [ScreenPlanStep]) {
+        self.summary = summary
+        self.steps = steps
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary
+        case steps
+    }
+}
+
 enum ClippyError: LocalizedError {
     case missingCLI(String)
     case missingAPIKey(String)

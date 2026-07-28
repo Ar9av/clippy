@@ -3,6 +3,9 @@ import Foundation
 enum ResponsePresentation: Equatable {
     case compact
     case expanded
+    case screenInsert
+    case screenPlan
+    case screenReply
 
     var instructions: String {
         switch self {
@@ -11,7 +14,8 @@ enum ResponsePresentation: Equatable {
             This answer will appear inside a very small floating speech balloon. \
             Give only the most useful conclusion in one or two short sentences, using at most 110 characters. \
             Use plain text only: no Markdown, headings, bullets, code fences, or preamble. \
-            If the request genuinely needs detail, give the key answer and end with “Open full chat for details.”
+            If the request genuinely needs detail, give the key answer and end with “Open full chat for details.” \
+            The [[CLIPPY_TYPE]] screen-action format is an exception to these length and formatting limits.
             """
         case .expanded:
             """
@@ -19,14 +23,37 @@ enum ResponsePresentation: Equatable {
             Use clear Markdown structure when it improves readability: short headings, bullets, numbered steps, emphasis, links, and fenced code blocks. \
             Stay concise relative to the task, but do not omit important explanation merely to keep the answer short.
             """
+        case .screenInsert:
+            """
+            The answer will be inserted directly into another app’s text field. \
+            Return only the exact finished text the user asked you to write. \
+            Do not add an introduction, explanation, quotation marks, Markdown fences, or a speaker label.
+            """
+        case .screenPlan:
+            """
+            Clippy could not retain a previously focused field, so use the attached screenshot and Screen Context to locate the intended destination. \
+            Return only a [[CLIPPY_PLAN]] JSON plan that navigates if needed and types the requested text into a clearly labeled editable field. \
+            Every target must exactly match a label in “Visible actionable controls”; never invent a label such as “prompt field.” \
+            Do not use [[CLIPPY_TYPE]], Markdown, commentary, or any text outside the JSON. \
+            If there is no visible editable destination, return [[CLIPPY_NO_TARGET]] followed by one short sentence. \
+            Never include Send, Submit, payment, deletion, agreement, password, or other final-action steps.
+            """
+        case .screenReply:
+            """
+            The user asked for a reply to a conversation visible on their screen. A live screenshot and Screen Context are supplied with this request; use them directly. \
+            Return only a polished, ready-to-send reply to the most relevant visible message. \
+            Match the other person's language and tone, keep it concise, and do not mention screenshots, Clippy, or uncertainty. \
+            Never ask the user to attach, paste, share, or describe the message. If no readable conversation is visible, say only: “I can’t find an open conversation on screen.” \
+            Do not use Markdown, a speaker label, or action markers. Never send the reply or claim it was sent.
+            """
         }
     }
 
     func prepare(_ response: String) -> String {
-        guard self == .compact else {
+        guard self == .compact || self == .screenReply else {
             return response.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return Self.compactText(response)
+        return Self.compactText(response, limit: self == .screenReply ? 340 : 120)
     }
 
     static func compactText(_ response: String, limit: Int = 120) -> String {
@@ -96,12 +123,193 @@ private final class RunningProcess: @unchecked Sendable {
 }
 
 enum AIService {
+    enum ScreenDirectiveKind {
+        case guide
+        case click
+    }
+
+    struct ScreenDirective {
+        let kind: ScreenDirectiveKind
+        let target: String
+        let response: String
+    }
+
+    struct ParsedScreenPlan {
+        let plan: PendingScreenPlan
+        let response: String
+    }
+
     private static let systemPrompt = """
     You are Clippy, a friendly desktop AI assistant for macOS. Be genuinely helpful, warm, concise, and practical. \
     You can help with writing, brainstorming, explaining, planning, debugging, and everyday questions. \
+    Clippy can insert text into the last editable field the user focused. When the user asks you to type, enter, paste, \
+    put, place, fill, or write finished text in another app, in a prompt, in a text box, “here,” or “on the app,” \
+    respond with [[CLIPPY_TYPE]] as the first characters, followed only by the exact text to insert. \
+    Resolve follow-ups such as “put that on the app” from the conversation. Never say you cannot type into the app. \
+    Do not use the marker for ordinary writing requests that the user only wants answered inside Clippy. \
+    When a Screen Context attachment is present, use its accessibility labels and coordinates together with the screenshot. \
+    If pointing to one visible control would help, begin with [[CLIPPY_GUIDE:exact control label]]. \
+    If and only if the user explicitly asks Clippy to click a control, begin with [[CLIPPY_CLICK:exact control label]]. \
+    Only emit either marker when that exact label appears in the “Visible actionable controls” list; otherwise give visual instructions without a marker. \
+    The app always asks the user to confirm before a click, so never claim the click already happened. \
+    When the user explicitly asks you to navigate, find a control, and put text somewhere, you may return a multi-step plan. \
+    Begin with [[CLIPPY_PLAN]] followed by one compact JSON object matching \
+    {"summary":"what the plan will do","steps":[{"action":"open","app":"System Settings"},{"action":"click","target":"exact label"},{"action":"wait","seconds":0.8},{"action":"key","key":"tab"},{"action":"type","target":"exact field label","text":"exact text"}]}. \
+    Use at most 10 steps. Allowed actions are open, click, wait, key, and type. \
+    Use open to bring another app to the front before acting on it, and key only for tab, escape, up, down, left, or right — there is no Return key, because the user always performs the final submit. \
+    Waits may be 0.1 to 8 seconds; prefer a short wait after any click that opens a menu, sheet, or new pane. \
+    Sequence as many steps as the task genuinely needs rather than stopping after the first one. \
+    Never include a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password. \
+    After the JSON, add one short plain-language sentence. The app will show the complete plan and require confirmation before running it. \
+    When a Screen Context attachment is present and the user asks to change, update, enable, disable, switch, or select something in the current app, return the same multi-step plan format. \
+    Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop before any final or irreversible action. \
     You are running as a local desktop client. Never claim you changed files or performed an action unless the user explicitly saw that happen. \
     Use plain language and light humor when it fits.
     """
+
+    private static let screenTypingMarker = "[[CLIPPY_TYPE]]"
+
+    static func screenInsertionText(from response: String) -> String? {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(screenTypingMarker) else { return nil }
+        let text = trimmed.dropFirst(screenTypingMarker.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    static func screenDirective(from response: String) -> ScreenDirective? {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patterns: [(ScreenDirectiveKind, String)] = [
+            (.guide, #"^\[\[CLIPPY_GUIDE:([^\]]+)\]\]"#),
+            (.click, #"^\[\[CLIPPY_CLICK:([^\]]+)\]\]"#)
+        ]
+        for (kind, pattern) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                    in: trimmed,
+                    range: NSRange(trimmed.startIndex..., in: trimmed)
+                  ),
+                  let targetRange = Range(match.range(at: 1), in: trimmed),
+                  let markerRange = Range(match.range(at: 0), in: trimmed) else {
+                continue
+            }
+            let target = String(trimmed[targetRange])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = String(trimmed[markerRange.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !target.isEmpty else { return nil }
+            return ScreenDirective(kind: kind, target: target, response: cleaned)
+        }
+        return nil
+    }
+
+    static func screenPlan(from response: String) -> ParsedScreenPlan? {
+        let marker = "[[CLIPPY_PLAN]]"
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(marker) else { return nil }
+        var remainder = String(trimmed.dropFirst(marker.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if remainder.hasPrefix("```json") {
+            remainder.removeFirst(7)
+            remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if remainder.hasPrefix("```") {
+            remainder.removeFirst(3)
+            remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let start = remainder.firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var end: String.Index?
+        for index in remainder.indices[start...] {
+            let character = remainder[index]
+            if escaped {
+                escaped = false
+                continue
+            }
+            if character == "\\" && inString {
+                escaped = true
+                continue
+            }
+            if character == "\"" {
+                inString.toggle()
+                continue
+            }
+            guard !inString else { continue }
+            if character == "{" { depth += 1 }
+            if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    end = index
+                    break
+                }
+            }
+        }
+        guard let end,
+              let data = String(remainder[start...end]).data(using: .utf8),
+              let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
+              (try? ScreenPlanRunner.validate(plan)) != nil else {
+            return nil
+        }
+        var responseText = String(remainder[remainder.index(after: end)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if responseText.hasPrefix("```") {
+            responseText.removeFirst(3)
+            responseText = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ParsedScreenPlan(
+            plan: plan,
+            response: responseText.isEmpty ? plan.summary : responseText
+        )
+    }
+
+    static func screenPlanFallbackResponse(from response: String) -> String? {
+        let marker = "[[CLIPPY_PLAN]]"
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(marker) else { return nil }
+        let remainder = String(trimmed.dropFirst(marker.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let closingBrace = remainder.lastIndex(of: "}") {
+            let trailing = String(remainder[remainder.index(after: closingBrace)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trailing.isEmpty {
+                return trailing
+            }
+            let jsonText = String(remainder[...closingBrace])
+            if let data = jsonText.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let summary = object["summary"] as? String,
+               !summary.isEmpty {
+                return summary
+            }
+        }
+        return "Open the target app so the destination field is visible, then ask me again."
+    }
+
+    static func screenPlanNoTargetResponse(from response: String) -> String? {
+        let marker = "[[CLIPPY_NO_TARGET]]"
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(marker) else { return nil }
+        let message = String(trimmed.dropFirst(marker.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty
+            ? "I can’t see an editable field yet. Open the destination and ask me to look again."
+            : message
+    }
+
+    static func asksForScreenAttachment(_ response: String) -> Bool {
+        let normalized = response.lowercased()
+        let attachmentAsk = [
+            "attach a screenshot", "attach the screenshot", "attach a screen context",
+            "attach screen context", "share the message", "paste the message",
+            "i don't see a screenshot", "i can’t see a screenshot", "i can't see a screenshot",
+            "screenshot attached", "only see what's shared", "only see what’s shared",
+            "not your live screen", "can only see what"
+        ]
+        return attachmentAsk.contains { normalized.contains($0) }
+    }
 
     static func reply(
         provider: AIProvider,

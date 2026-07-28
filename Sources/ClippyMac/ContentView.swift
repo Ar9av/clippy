@@ -9,12 +9,14 @@ private enum CompactPanel {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveringClippy = false
     @State private var compactInputActive = false
     @State private var compactBalloonVisible = true
     @State private var pasteMonitor: Any?
     @State private var compactInputFocused = false
     @State private var compactPanel: CompactPanel = .home
+    @State private var showHistory = false
 
     private let suggestions = [
         "Help me think through an idea",
@@ -42,10 +44,17 @@ struct ContentView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
             }
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: viewModel.isExpanded)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.18),
+            value: viewModel.isExpanded
+        )
         .ignoresSafeArea()
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView()
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $showHistory) {
+            ChatHistoryView()
                 .environmentObject(viewModel)
         }
         .onChange(of: viewModel.speech.transcript) { _, newValue in
@@ -80,6 +89,12 @@ struct ContentView: View {
             header
             Divider().opacity(0.55)
             conversation
+            if let plan = viewModel.pendingScreenPlan {
+                screenPlanBanner(plan)
+            }
+            if let action = viewModel.pendingScreenAction {
+                screenActionBanner(action)
+            }
             if let error = viewModel.errorMessage {
                 errorBanner(error)
             }
@@ -115,12 +130,18 @@ struct ContentView: View {
                     .frame(height: 218)
             }
 
-            AnimatedClippyView(mood: clippyMood)
+            Group {
+                if viewModel.animateClippy && !reduceMotion {
+                    AnimatedClippyView(mood: clippyMood)
+                } else {
+                    StaticClippyView()
+                }
+            }
                 .frame(width: 110, height: 110)
                 .offset(x: 31)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    withAnimation(.spring(response: 0.25)) {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
                         setCompactBalloonVisible(!compactBalloonVisible)
                     }
                 }
@@ -143,17 +164,25 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
                 Button {
-                    viewModel.showSettings = true
+                    viewModel.setExpanded(true)
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.black)
-                .help("Settings")
+                .help("Open full chat")
             }
 
             if viewModel.isLoading {
                 compactActivityRow
+            }
+
+            if let action = viewModel.pendingScreenAction {
+                compactScreenConfirmation(action)
+            }
+
+            if let plan = viewModel.pendingScreenPlan {
+                compactScreenPlan(plan)
             }
 
             if compactInputActive {
@@ -213,55 +242,12 @@ struct ContentView: View {
                     )
                 }
 
-                HStack(spacing: 12) {
-                    Button {
-                        chooseAttachments()
-                    } label: {
-                        Label("Attach", systemImage: "paperclip")
-                    }
-                    .disabled(viewModel.isLoading)
-                    Button {
-                        viewModel.pasteAttachmentsOrExplain()
-                    } label: {
-                        Label("Paste", systemImage: "doc.on.clipboard")
-                    }
-                    .disabled(viewModel.isLoading)
-                    Button {
-                        viewModel.setExpanded(true)
-                    } label: {
-                        Label("Full chat", systemImage: "arrow.up.left.and.arrow.down.right")
-                    }
-                }
-                .font(.system(size: 11))
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.blue)
-
                 if viewModel.errorMessage != nil {
                     HStack(spacing: 12) {
                         Button("Try again") { viewModel.retryLastRequest() }
-                        Button("Open settings") { viewModel.showSettings = true }
+                        Button("Full chat") { viewModel.setExpanded(true) }
                     }
                     .font(.system(size: 11))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.blue)
-                }
-
-                if let answer = lastAssistantAnswer {
-                    HStack(spacing: 12) {
-                        Button {
-                            copyToPasteboard(answer)
-                        } label: {
-                            Label("Copy answer", systemImage: "doc.on.doc")
-                        }
-                        if let url = AnswerActions.firstLink(in: answer) {
-                            Button {
-                                NSWorkspace.shared.open(url)
-                            } label: {
-                                Label("Open link", systemImage: "arrow.up.right.square")
-                            }
-                        }
-                    }
-                    .font(.system(size: 10))
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.blue)
                 }
@@ -294,6 +280,10 @@ struct ContentView: View {
                 ClassicOptionButton("Ask Clippy here") {
                     compactInputActive = true
                     compactInputFocused = true
+                }
+                ClassicOptionButton("Look at this screen") {
+                    compactInputActive = true
+                    viewModel.inspectCurrentScreen()
                 }
                 ClassicOptionButton("Continue a coding session") {
                     viewModel.refreshSessions()
@@ -376,6 +366,63 @@ struct ContentView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(viewModel.activityMessage), elapsed time \(elapsedText)")
+    }
+
+    private func compactScreenConfirmation(_ action: PendingScreenAction) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(action.detail, systemImage: "cursorarrow.click.2")
+                .font(.system(size: 10))
+                .foregroundStyle(.black)
+                .lineLimit(3)
+            HStack(spacing: 10) {
+                Button("Click \(action.label)") {
+                    viewModel.confirmPendingScreenAction()
+                }
+                .buttonStyle(ClassicButtonStyle())
+                Button("Cancel") {
+                    viewModel.cancelPendingScreenAction()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.blue)
+            }
+            .font(.system(size: 10))
+        }
+        .padding(7)
+        .background(Color.orange.opacity(0.16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.orange.opacity(0.45))
+        )
+    }
+
+    private func compactScreenPlan(_ plan: PendingScreenPlan) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("\(plan.steps.count)-step plan ready", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.black)
+            Text(plan.summary)
+                .font(.system(size: 10))
+                .foregroundStyle(.black.opacity(0.78))
+                .lineLimit(2)
+            HStack(spacing: 10) {
+                Button("Review steps") {
+                    viewModel.setExpanded(true)
+                }
+                .buttonStyle(ClassicButtonStyle())
+                Button("Cancel") {
+                    viewModel.cancelPendingScreenPlan()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.blue)
+            }
+            .font(.system(size: 10))
+        }
+        .padding(7)
+        .background(Color.blue.opacity(0.1))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.blue.opacity(0.35))
+        )
     }
 
     private func sendCompactMessage() {
@@ -514,6 +561,9 @@ struct ContentView: View {
                 ) {
                     viewModel.setExpanded(false)
                 }
+                headerButton("clock.arrow.circlepath", help: "Chat history") {
+                    showHistory = true
+                }
                 headerButton("square.and.pencil", help: "New conversation") {
                     viewModel.clearConversation()
                 }
@@ -572,12 +622,12 @@ struct ContentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    ForEach(viewModel.messages) { message in
+                    ForEach(viewModel.visibleMessages) { message in
                         MessageBubble(message: message)
                             .id(message.id)
                     }
 
-                    if viewModel.messages.count == 1 {
+                    if viewModel.visibleMessages.count == 1 {
                         suggestionGrid
                     }
 
@@ -593,17 +643,34 @@ struct ContentView: View {
                         }
                         .id("loading")
                     }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id("conversation-bottom")
                 }
                 .padding(18)
             }
-            .onChange(of: viewModel.messages.count) { _, _ in
-                if let last = viewModel.messages.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+            .onAppear {
+                // A full-chat open creates this view anew. Deferring one run-loop
+                // lets LazyVStack lay out recent messages before the initial jump.
+                DispatchQueue.main.async {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: viewModel.messages.last?.id) { _, _ in
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
                 }
             }
             .onChange(of: viewModel.isLoading) { _, loading in
                 if loading {
-                    proxy.scrollTo("loading", anchor: .bottom)
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    }
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
@@ -654,6 +721,111 @@ struct ContentView: View {
         }
         .padding(11)
         .background(Color.orange.opacity(0.1))
+        .padding(.horizontal, 14)
+    }
+
+    private func screenActionBanner(_ action: PendingScreenAction) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "cursorarrow.click.2")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Clippy found “\(action.label)”")
+                    .font(.caption.weight(.semibold))
+                Text(action.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Cancel") {
+                viewModel.cancelPendingScreenAction()
+            }
+            .buttonStyle(.borderless)
+            Button("Click") {
+                viewModel.confirmPendingScreenAction()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08))
+        .padding(.horizontal, 14)
+    }
+
+    @ViewBuilder
+    private func stepMarker(index: Int, status: ScreenPlanStepStatus) -> some View {
+        switch status {
+        case .done:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+                .frame(width: 17, height: 17)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(width: 17, height: 17)
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 17, height: 17)
+        case .pending, .skipped:
+            Text("\(index + 1)")
+                .font(.caption2.bold().monospacedDigit())
+                .frame(width: 17, height: 17)
+                .background(Circle().fill(Color.blue.opacity(0.15)))
+        }
+    }
+
+    private func screenPlanBanner(_ plan: PendingScreenPlan) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label(plan.summary, systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("\(plan.steps.count) steps")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(plan.steps.enumerated()), id: \.element.id) { index, step in
+                    let status = viewModel.screenPlanStatuses.indices.contains(index)
+                        ? viewModel.screenPlanStatuses[index]
+                        : .pending
+                    HStack(alignment: .top, spacing: 7) {
+                        stepMarker(index: index, status: status)
+                        Text(step.displayText)
+                            .font(.caption)
+                            .foregroundStyle(status == .done ? .secondary : .primary)
+                            .strikethrough(status == .done)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            HStack {
+                Text("Clippy will stop before Send, Submit, payment, deletion, or password controls.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(viewModel.isRunningScreenPlan ? "Stop" : "Cancel") {
+                    viewModel.cancelPendingScreenPlan()
+                }
+                .buttonStyle(.borderless)
+                Button(viewModel.isRunningScreenPlan ? "Running…" : "Run plan") {
+                    viewModel.runPendingScreenPlan()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(viewModel.isRunningScreenPlan)
+            }
+        }
+        .padding(11)
+        .background(Color.blue.opacity(0.07))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.blue.opacity(0.25)).frame(height: 1)
+        }
         .padding(.horizontal, 14)
     }
 
@@ -1139,6 +1311,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var apiKey = ""
     @State private var saveError: String?
+    @State private var accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+    @State private var screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1204,22 +1378,167 @@ struct SettingsView: View {
                     }
                     Toggle("Read replies aloud", isOn: $viewModel.speakReplies)
                     Toggle("Keep Clippy above other windows", isOn: $viewModel.alwaysOnTop)
+                    Toggle("Animate Clippy", isOn: $viewModel.animateClippy)
+                    Text("Off keeps the paperclip still and reduces visual motion.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(8)
             }
 
-            Spacer()
+            GroupBox("Write in other apps") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Clippy can insert generated text into the last editable field you focused. It never types into secure fields or presses Send.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Label(
+                            accessibilityEnabled ? "Accessibility enabled" : "Accessibility permission required",
+                            systemImage: accessibilityEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(accessibilityEnabled ? Color.green : Color.orange)
+                        Spacer()
+                        if accessibilityEnabled {
+                            Button("Open System Settings") {
+                                ScreenTypingService.shared.openAccessibilitySettings()
+                            }
+                        } else {
+                            Button("Enable…") {
+                                ScreenTypingService.shared.requestAccessibilityPermission()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(8)
+            }
+
+            GroupBox("See and guide on screen") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("With Screen Recording and Accessibility, Clippy can inspect the current app, highlight controls, and prepare clicks. Every click still requires your confirmation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Label(
+                            screenRecordingEnabled
+                                ? "Screen awareness enabled"
+                                : "Screen Recording permission required",
+                            systemImage: screenRecordingEnabled
+                                ? "eye.circle.fill"
+                                : "eye.slash.circle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(screenRecordingEnabled ? Color.green : Color.orange)
+                        Spacer()
+                        if screenRecordingEnabled {
+                            Button("Open System Settings") {
+                                ScreenAwarenessService.shared.openScreenRecordingSettings()
+                            }
+                        } else {
+                            Button("Enable…") {
+                                ScreenAwarenessService.shared.requestPermissions()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
+                                    accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(8)
+            }
 
             Text("Subscription modes use the locally installed CLI and its existing login. API usage is billed by the selected provider.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
         .padding(22)
-        .frame(width: 560, height: 470)
-        .onAppear { apiKey = viewModel.currentAPIKey() }
+        .frame(width: 560, height: 680)
+        .onAppear {
+            apiKey = viewModel.currentAPIKey()
+            accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+            screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
+        }
         .onChange(of: viewModel.provider) { _, _ in
             apiKey = viewModel.currentAPIKey()
             saveError = nil
         }
+    }
+}
+
+struct ChatHistoryView: View {
+    @EnvironmentObject private var viewModel: ChatViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmingClearAll = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Chat history")
+                    .font(.title2.bold())
+                Spacer()
+                if !viewModel.chatHistory.isEmpty {
+                    Button("Clear all", role: .destructive) {
+                        confirmingClearAll = true
+                    }
+                    .confirmationDialog(
+                        "Delete all saved conversations?",
+                        isPresented: $confirmingClearAll,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete All", role: .destructive) {
+                            viewModel.clearAllHistory()
+                        }
+                    }
+                }
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            if viewModel.chatHistory.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                    Text("Past conversations will show up here once you start a new one.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(viewModel.chatHistory) { session in
+                        Button {
+                            viewModel.restoreHistorySession(session)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(session.preview)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                Text(session.endedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions {
+                            Button("Delete", role: .destructive) {
+                                viewModel.deleteHistorySession(session)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(22)
+        .frame(width: 460, height: 520)
     }
 }

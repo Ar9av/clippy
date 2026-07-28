@@ -45,7 +45,16 @@ done
 
 iconutil -c icns "$ICONSET_DIR" -o "$CONTENTS_DIR/Resources/Clippy.icns"
 
-SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+    SIGN_IDENTITY="$CODESIGN_IDENTITY"
+else
+    SIGN_IDENTITY="$(
+        security find-identity -v -p codesigning 2>/dev/null \
+            | awk -F'"' '/Apple Development:/ { print $2; exit }'
+    )"
+    SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+fi
+echo "Signing with: $SIGN_IDENTITY"
 codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 

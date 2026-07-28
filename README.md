@@ -18,6 +18,11 @@ Claude Code or Codex login, or use their own OpenAI/Anthropic API key.
 - Streamlined expanded-chat header with a smaller Clippy and clearer controls
 - Compact action center for opening trusted apps and common folders
 - Local Codex and Claude session discovery with explicit resume-in-Terminal actions
+- Accessibility-powered “write here” requests that insert finished text into the last focused editable field
+- Opt-in screen awareness that combines a live window capture with precise Accessibility control geometry
+- Yellow “show me” highlights plus confirmed multi-step plans that can navigate, re-scan, find a field, and insert text
+- Full step review before a plan runs; Send, Submit, payment, deletion, agreement, and password actions are blocked
+- Secure fields are refused, and Clippy never presses Send or Submit on the user’s behalf
 - Contextual answer actions for copying results and opening cited links
 - Static message portraits and non-animated auto-scroll for smoother conversations
 - True request cancellation for API calls and local Claude Code/Codex processes
@@ -46,8 +51,13 @@ All sprite, animation, and icon assets required by the packaging script are
 included in `Resources`, so the repository builds independently of the
 portfolio project it originated in.
 
-The local build is ad-hoc signed. For public distribution without Gatekeeper
-warnings, set a Developer ID identity before building:
+Local builds automatically use the first Apple Development code-signing
+identity in the current keychain. This keeps macOS Accessibility permission
+stable across rebuilds. If no development identity is available, the script
+falls back to ad-hoc signing.
+
+For public distribution without Gatekeeper warnings, set a Developer ID
+identity before building:
 
 ```bash
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build-dmg.sh
@@ -73,3 +83,11 @@ network/file mutation disabled by the `read-only` sandbox.
 Select OpenAI API or Anthropic API in Settings, enter a model and API key, then
 click **Save key**. Keys never enter app preferences; they are stored in the
 user's macOS Keychain.
+
+## Screen awareness
+
+Enable both **Accessibility** and **Screen & System Audio Recording** in Clippy
+Settings. Screen captures are created only after an explicit screen-help or
+navigation request and are passed to the selected AI provider for analysis.
+Clippy previews every multi-step action plan before running it and stops before
+any final submission or sensitive control.

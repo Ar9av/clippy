@@ -17,8 +17,14 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("Speech"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
+                .linkedFramework("ScreenCaptureKit")
             ]
+        ),
+        .testTarget(
+            name: "ClippyMacTests",
+            dependencies: ["ClippyMac"],
+            path: "Tests/ClippyMacTests"
         )
     ]
 )

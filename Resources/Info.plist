@@ -21,14 +21,18 @@
     <key>CFBundleShortVersionString</key>
 	<string>2.0.0</string>
     <key>CFBundleVersion</key>
-	<string>16</string>
+	<string>54</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Clippy uses the microphone only when you choose to dictate a message.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Clippy uses System Events only to paste generated text into the field you selected.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Clippy uses the microphone only when you choose to dictate a message.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Clippy captures the active window only when you ask it to read the screen, draft a reply, or guide you through a task.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
     <string>Clippy uses speech recognition to turn your dictation into a chat message.</string>
 </dict>
 </plist>

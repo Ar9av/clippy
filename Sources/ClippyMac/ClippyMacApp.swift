@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pointerPassthroughTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ScreenPlanSelfTest.isRequested {
+            Task { await ScreenPlanSelfTest.run() }
+            return
+        }
         DispatchQueue.main.async { [weak self] in
             self?.configureWindows(expanded: false)
             self?.startPointerPassthroughMonitoring()
@@ -94,6 +98,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : defaults.bool(forKey: "compactBalloonVisible")
 
         for window in NSApplication.shared.windows {
+            // The screen-highlight overlays are ours but are not chat windows:
+            // they can cover a whole display, and making them catch the pointer
+            // swallows every click meant for the app underneath.
+            guard window.identifier != clippyOverlayWindowIdentifier else { continue }
+
             // Expanded chat, visible balloons, and sheets remain conventionally interactive.
             guard !isExpanded,
                   !balloonVisible,
