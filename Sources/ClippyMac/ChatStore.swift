@@ -16,6 +16,7 @@ enum ChatStore {
 
     private static let messagesURL = directory.appendingPathComponent("messages.json")
     private static let historyURL = directory.appendingPathComponent("history.json")
+    private static let pendingPlanURL = directory.appendingPathComponent("pendingPlan.json")
 
     /// Deletes both store files outright, as opposed to saving an empty
     /// array to them — an empty-but-present file still decodes successfully
@@ -24,6 +25,26 @@ enum ChatStore {
     static func resetForTesting() {
         try? FileManager.default.removeItem(at: messagesURL)
         try? FileManager.default.removeItem(at: historyURL)
+        try? FileManager.default.removeItem(at: pendingPlanURL)
+    }
+
+    /// A plan awaiting "Run plan" confirmation is in-memory-only `@Published`
+    /// state, but the chat message that introduced it (the model's own
+    /// commentary, e.g. "Review and confirm to run it.") is a persisted
+    /// `ChatMessage` — without this, quitting/relaunching mid-confirmation
+    /// left that message sitting in the transcript with no plan left to
+    /// confirm. Restored plans are still subject to the same staleness
+    /// window `ChatViewModel` already applies to a live pending plan.
+    static func loadPendingPlan() -> PendingScreenPlan? {
+        decode(PendingScreenPlan.self, at: pendingPlanURL)
+    }
+
+    static func savePendingPlan(_ plan: PendingScreenPlan?) {
+        guard let plan else {
+            try? FileManager.default.removeItem(at: pendingPlanURL)
+            return
+        }
+        encode(plan, to: pendingPlanURL)
     }
 
     static func loadMessages() -> [ChatMessage] {

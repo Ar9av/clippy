@@ -18,7 +18,9 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var recentSessions: [CodingSession] = []
     @Published private(set) var chatHistory: [ArchivedChatSession] = []
     @Published var pendingScreenAction: PendingScreenAction?
-    @Published var pendingScreenPlan: PendingScreenPlan?
+    @Published var pendingScreenPlan: PendingScreenPlan? {
+        didSet { ChatStore.savePendingPlan(pendingScreenPlan) }
+    }
     @Published private(set) var isRunningScreenPlan = false
     /// One status per step of `pendingScreenPlan`, so the banner shows the
     /// sequence advancing and where it stopped if something failed.
@@ -88,6 +90,7 @@ final class ChatViewModel: ObservableObject {
         Task.detached(priority: .background) { CacheJanitor.clean() }
         loadMessages()
         loadChatHistory()
+        loadPendingScreenPlan()
         if messages.isEmpty {
             messages = [
                 ChatMessage(
@@ -997,7 +1000,7 @@ final class ChatViewModel: ObservableObject {
             screenPlanStatuses = []
             screenStatus = modelStopReason
             finishActivity(message: modelStopReason)
-            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: nil)
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: modelStopReason)
         } else if executedSteps.count >= ScreenPlanRunner.stepLimit {
             // Hit the step cap with a next step still queued — the task was
             // truncated, not completed. Never claim success here.
@@ -1275,6 +1278,22 @@ final class ChatViewModel: ObservableObject {
         let decoded = ChatStore.loadMessages()
         guard !decoded.isEmpty else { return }
         messages = decoded
+    }
+
+    /// A plan left over from before the app quit is only worth restoring if
+    /// it's still within the same confirmation window `send()` enforces for
+    /// a live plan — otherwise this would resurrect a stale "Run plan" days
+    /// later. `didSet` on `pendingScreenPlan` re-persists it here, which is a
+    /// harmless no-op write.
+    private func loadPendingScreenPlan() {
+        guard let plan = ChatStore.loadPendingPlan(), !plan.hasExecuted else { return }
+        let isStale = Date().timeIntervalSince(plan.createdAt) > Self.pendingPlanConfirmationWindow
+        guard !isStale else {
+            ChatStore.savePendingPlan(nil)
+            return
+        }
+        pendingScreenPlan = plan
+        screenPlanStatuses = plan.steps.map { _ in .pending }
     }
 
     private func persistChatHistory() {
