@@ -1172,8 +1172,8 @@ private struct MarkdownMessageText: View {
     }
 }
 
-private struct MarkdownBlock: Identifiable {
-    enum Kind {
+struct MarkdownBlock: Identifiable {
+    enum Kind: Equatable {
         case heading(Int, String)
         case paragraph(String)
         case bullet(String)

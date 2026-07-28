@@ -776,31 +776,46 @@ final class ScreenAwarenessService {
 
     private func resolve(_ query: String, preferEditable: Bool = false) throws -> ResolvedElement {
         let normalizedQuery = Self.normalized(query)
-        let queryWords = Set(normalizedQuery.split(separator: " ").map(String.init))
-        let candidates = resolvedElements.values.filter(\.summary.enabled)
         // `preferEditable` is set by callers that already know this is a typing
         // action (`put`), so a phrase like "address bar" that doesn't literally
         // say "field"/"box" still gets biased toward the real editable control
         // instead of a same-named toolbar label or group.
         let isFieldIntent = preferEditable || Self.isFieldIntent(normalizedQuery)
+        let candidates = resolvedElements.values.filter(\.summary.enabled)
         let ranked = candidates.map { candidate -> (ResolvedElement, Int) in
-            let label = Self.normalized(candidate.summary.label)
-            let labelWords = Set(label.split(separator: " ").map(String.init))
-            var score = queryWords.intersection(labelWords).count * 10
-            if label == normalizedQuery { score += 100 }
-            if label.contains(normalizedQuery) || normalizedQuery.contains(label) { score += 35 }
-            if isFieldIntent, Self.isEditableRole(candidate.summary.role) {
-                // macOS often calls a chat composer “TextArea” or exposes only
-                // its placeholder, so use the real editable control.
-                score += 80
-                if candidate.summary.role == "TextArea" { score += 20 }
-            }
+            let score = Self.matchScore(
+                query: normalizedQuery,
+                label: candidate.summary.label,
+                role: candidate.summary.role,
+                isFieldIntent: isFieldIntent
+            )
             return (candidate, score)
         }
         guard let best = ranked.max(by: { $0.1 < $1.1 }), best.1 > 0 else {
             throw ScreenAwarenessError.targetNotFound(query)
         }
         return best.0
+    }
+
+    /// The word-overlap + role-bias scoring `resolve()` ranks candidates by,
+    /// pulled out as a pure function of plain values (no `ResolvedElement`/
+    /// `AXUIElement`) so it's testable without accessibility permission.
+    /// `query` is expected already-normalized (see `normalized(_:)`); `label`
+    /// and `role` are raw as read off the accessibility tree.
+    nonisolated static func matchScore(query normalizedQuery: String, label: String, role: String, isFieldIntent: Bool) -> Int {
+        let queryWords = Set(normalizedQuery.split(separator: " ").map(String.init))
+        let normalizedLabel = Self.normalized(label)
+        let labelWords = Set(normalizedLabel.split(separator: " ").map(String.init))
+        var score = queryWords.intersection(labelWords).count * 10
+        if normalizedLabel == normalizedQuery { score += 100 }
+        if normalizedLabel.contains(normalizedQuery) || normalizedQuery.contains(normalizedLabel) { score += 35 }
+        if isFieldIntent, Self.isEditableRole(role) {
+            // macOS often calls a chat composer “TextArea” or exposes only
+            // its placeholder, so use the real editable control.
+            score += 80
+            if role == "TextArea" { score += 20 }
+        }
+        return score
     }
 
     /// `includeRestricted: false` (the default) is for anything that will
@@ -965,7 +980,7 @@ final class ScreenAwarenessService {
             && settable.boolValue
     }
 
-    private static func isEditableRole(_ role: String) -> Bool {
+    nonisolated private static func isEditableRole(_ role: String) -> Bool {
         ["TextField", "TextArea", "ComboBox"].contains(role)
     }
 
@@ -1156,7 +1171,7 @@ final class ScreenAwarenessService {
         return value as? Bool
     }
 
-    private static func normalized(_ value: String) -> String {
+    nonisolated private static func normalized(_ value: String) -> String {
         value.lowercased()
             .replacingOccurrences(of: #"[^a-z0-9 ]"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)

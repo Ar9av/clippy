@@ -54,7 +54,7 @@ enum ScreenPlanSelfTest {
         await checkHighlightGeometry()
         await checkStopsOnMissingTarget()
         await checkRefusesUnsafePlan()
-        await checkRefusesTerminal()
+        await checkAllowsTerminalActivation()
 
         log("──")
         if failures.isEmpty {
@@ -190,12 +190,21 @@ enum ScreenPlanSelfTest {
         }
     }
 
-    private static func checkRefusesTerminal() async {
+    /// `AutomationSafety.blockedNameFragments`/`blockedBundleIdentifiers` are
+    /// intentionally empty (see that file's doc comment) — Clippy is allowed
+    /// to switch to and type into a terminal, with the no-Return rule as the
+    /// residual guard against it running commands unattended. This check
+    /// previously expected the opposite (asserting activation is refused),
+    /// which directly contradicted
+    /// `ScreenPlanRunnerTests.testAllowsTerminalsAsOpenTargetsSinceRestrictionWasIntentionallyDisabled`
+    /// — the two test suites were asserting opposite contracts for the same
+    /// behavior.
+    private static func checkAllowsTerminalActivation() async {
         do {
             try await ScreenAwarenessService.shared.activateApp(named: "Terminal")
-            failures.append("Terminal was activated for automation")
+            log("  ✓ activated Terminal (typing is allowed; Return to it is not)")
         } catch {
-            log("  ✓ refused to drive Terminal")
+            failures.append("Terminal activation was refused: \(error.localizedDescription)")
         }
     }
 }
