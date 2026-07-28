@@ -1208,6 +1208,10 @@ extension ScreenAwarenessService: ScreenStepPerforming {
     func idle(_ seconds: Double) async throws {
         try await Task.sleep(for: .seconds(seconds))
     }
+
+    func highlight(_ label: String) async throws -> String {
+        try highlight(matching: label)
+    }
 }
 
 /// Sits just below macOS's drag-image layer instead of `.screenSaver`. A

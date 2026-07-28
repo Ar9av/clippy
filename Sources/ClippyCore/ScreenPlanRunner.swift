@@ -30,6 +30,12 @@ public protocol ScreenStepPerforming: AnyObject {
     func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws
     func press(_ key: ScreenPlanKey) async throws
     func idle(_ seconds: Double) async throws
+    /// Visually points out a control without clicking it — used by
+    /// `ScreenAgent`'s `highlight_control` tool. Returns the resolved
+    /// label (which may differ slightly from `label` once matched against
+    /// the accessibility tree). Conformers that don't need this get a
+    /// default that just echoes `label` back with no visible effect.
+    func highlight(_ label: String) async throws -> String
 }
 
 extension ScreenStepPerforming {
@@ -43,6 +49,10 @@ extension ScreenStepPerforming {
 
     public func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
         try await type(text, into: target, pressReturnAfter: pressReturnAfter)
+    }
+
+    public func highlight(_ label: String) async throws -> String {
+        label
     }
 }
 
