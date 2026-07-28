@@ -147,12 +147,47 @@ enum LocalActionService {
         return nil
     }
 
-    private static func decodedClaudeProjectPath(from directory: String) -> String {
-        let candidate = "/" + directory.drop(while: { $0 == "-" })
-            .replacingOccurrences(of: "-", with: "/")
-        return FileManager.default.fileExists(atPath: candidate)
-            ? candidate
-            : FileManager.default.homeDirectoryForCurrentUser.path
+    /// Claude Code encodes a project's cwd by replacing every "/" with "-",
+    /// so a directory component that itself contains a hyphen (e.g.
+    /// "ar9av-portfolio") is indistinguishable in the encoded name from a
+    /// path separator. Naively replacing every "-" back with "/" decodes
+    /// "…-ar9av-portfolio-clippy-mac" into the nonexistent
+    /// "…/ar9av/portfolio/clippy/mac" and silently falls back to the home
+    /// directory. This walks the real filesystem instead: at each path
+    /// component, try the longest run of remaining hyphen-separated pieces
+    /// that exists as a real subdirectory before falling back to a single
+    /// piece, so a hyphenated directory name is preserved rather than split.
+    static func decodedClaudeProjectPath(from directory: String) -> String {
+        let fileManager = FileManager.default
+        let pieces = directory.drop(while: { $0 == "-" })
+            .split(separator: "-")
+            .map(String.init)
+        guard !pieces.isEmpty else { return fileManager.homeDirectoryForCurrentUser.path }
+
+        var currentPath = ""
+        var index = 0
+        while index < pieces.count {
+            var end = pieces.count
+            var matched = false
+            while end > index {
+                let candidateName = pieces[index..<end].joined(separator: "-")
+                let candidatePath = currentPath + "/" + candidateName
+                if fileManager.fileExists(atPath: candidatePath) {
+                    currentPath = candidatePath
+                    index = end
+                    matched = true
+                    break
+                }
+                end -= 1
+            }
+            if !matched {
+                currentPath += "/" + pieces[index]
+                index += 1
+            }
+        }
+        return fileManager.fileExists(atPath: currentPath)
+            ? currentPath
+            : fileManager.homeDirectoryForCurrentUser.path
     }
 
     private static func executableURL(named name: String) throws -> URL {

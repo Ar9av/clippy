@@ -14,6 +14,10 @@ let package = Package(
         .executableTarget(
             name: "ClippyMac",
             path: "Sources/ClippyMac",
+            resources: [
+                .copy("Resources/ClippySprites.png"),
+                .copy("Resources/ClippyAnimations.json")
+            ],
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("Speech"),

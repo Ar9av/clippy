@@ -20,8 +20,8 @@ mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_ROOT" "$ICONSET_D
 
 cp "$SWIFT_BUILD_DIR/Clippy" "$CONTENTS_DIR/MacOS/Clippy"
 cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
-cp "$PROJECT_DIR/Resources/ClippySprites.png" "$CONTENTS_DIR/Resources/ClippySprites.png"
-cp "$PROJECT_DIR/Resources/ClippyAnimations.json" "$CONTENTS_DIR/Resources/ClippyAnimations.json"
+cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippySprites.png" "$CONTENTS_DIR/Resources/ClippySprites.png"
+cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippyAnimations.json" "$CONTENTS_DIR/Resources/ClippyAnimations.json"
 
 PADDED_ICON="$BUILD_DIR/clippy-square.png"
 cp "$SOURCE_ICON" "$PADDED_ICON"
@@ -55,8 +55,8 @@ else
     SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 fi
 echo "Signing with: $SIGN_IDENTITY"
-codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR"
-codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+codesign --force --options runtime --entitlements "$SCRIPT_DIR/Clippy.entitlements" --sign "$SIGN_IDENTITY" "$APP_DIR"
+codesign --verify --strict --verbose=2 "$APP_DIR"
 
 cp -R "$APP_DIR" "$DMG_ROOT/Clippy.app"
 ln -s /Applications "$DMG_ROOT/Applications"

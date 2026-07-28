@@ -291,6 +291,11 @@ final class ScreenPlanRunner {
             guard let key = step.key else { throw ScreenPlanError.malformedStep(0) }
             try await performer.press(key)
         case .wait:
+            // validate() already rejects any step whose seconds falls
+            // outside waitRange, and run() always validates before this is
+            // ever reached — the clamp here is pure defense-in-depth for a
+            // future caller of perform() that skips validate, not a second,
+            // looser policy. There is exactly one allowed range.
             try await performer.idle(min(max(step.seconds ?? 0.8, Self.waitRange.lowerBound), Self.waitRange.upperBound))
         }
     }

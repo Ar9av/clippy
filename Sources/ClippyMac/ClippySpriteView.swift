@@ -74,10 +74,18 @@ final class ClippyAnimationController: ObservableObject {
         play(newMood)
     }
 
+    /// The packaged .app (built via scripts/build-dmg.sh) copies these files
+    /// directly into Contents/Resources, so `Bundle.main` finds them there.
+    /// A plain `swift build`/`swift run` has no .app bundle at all — for
+    /// that case SwiftPM generates a resource bundle for this target
+    /// (`Bundle.module`), so fall back to it rather than silently rendering
+    /// no sprite.
     private func loadAssets() {
         guard
-            let jsonURL = Bundle.main.url(forResource: "ClippyAnimations", withExtension: "json"),
-            let spriteURL = Bundle.main.url(forResource: "ClippySprites", withExtension: "png"),
+            let jsonURL = Bundle.main.url(forResource: "ClippyAnimations", withExtension: "json")
+                ?? Bundle.module.url(forResource: "ClippyAnimations", withExtension: "json"),
+            let spriteURL = Bundle.main.url(forResource: "ClippySprites", withExtension: "png")
+                ?? Bundle.module.url(forResource: "ClippySprites", withExtension: "png"),
             let json = try? Data(contentsOf: jsonURL),
             let decoded = try? JSONDecoder().decode(AgentAnimationData.self, from: json),
             let source = CGImageSourceCreateWithURL(spriteURL as CFURL, nil),
