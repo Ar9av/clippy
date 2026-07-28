@@ -397,6 +397,7 @@ final class ChatViewModel: ObservableObject {
                         screenStatus = "Waiting for your confirmation."
                         finishActivity(message: "Ready when you are.")
                     }
+                    if speakReplies { speech.speak(Self.spokenText(from: preparedResponse)) }
                 } else if willWriteToScreen {
                     // Prefer the field the screen capture above already found —
                     // it doesn't require the destination to have been clicked
@@ -413,6 +414,9 @@ final class ChatViewModel: ObservableObject {
                         let appName = try await ScreenTypingService.shared.insert(preparedResponse)
                         finishActivity(message: "Typed into \(appName).")
                     }
+                    // preparedResponse here is the exact text just typed into
+                    // another app, not commentary — speaking it back would
+                    // read the other app's own field content aloud.
                 } else if shouldDraftScreenReply {
                     do {
                         let target = try await ScreenAwarenessService.shared
@@ -425,14 +429,18 @@ final class ChatViewModel: ObservableObject {
                         screenStatus = "Reply ready — I couldn’t reach the message box."
                         finishActivity(message: "Your reply is ready to copy.")
                     }
-                } else if let parsedScreenPlan {
-                    activityTask?.cancel()
-                    isLoading = false
-                    await presentOrAutoRun(parsedScreenPlan.plan)
+                    // Same reasoning as willWriteToScreen: this is the drafted
+                    // reply's own text, not something to read aloud.
                 } else {
-                    finishActivity()
+                    if let parsedScreenPlan {
+                        activityTask?.cancel()
+                        isLoading = false
+                        await presentOrAutoRun(parsedScreenPlan.plan)
+                    } else {
+                        finishActivity()
+                    }
+                    if speakReplies { speech.speak(Self.spokenText(from: preparedResponse)) }
                 }
-                if speakReplies { speech.speak(preparedResponse) }
             } catch is CancellationError {
                 return
             } catch {
@@ -590,6 +598,25 @@ final class ChatViewModel: ObservableObject {
         case .click:
             return "Click \(target)?"
         }
+    }
+
+    /// Strips Markdown before handing text to `AVSpeechSynthesizer` — it was
+    /// previously fed the raw expanded-presentation reply verbatim, so
+    /// headings, bold/italic markers, links, and fenced code all got read
+    /// aloud character-for-character (e.g. "pound pound Setup" for "## Setup").
+    /// Code blocks are dropped entirely rather than read character-by-character.
+    nonisolated static func spokenText(from markdown: String) -> String {
+        var text = markdown
+        text = text.replacingOccurrences(of: #"```[a-zA-Z0-9]*\n[\s\S]*?```"#, with: " Code omitted. ", options: .regularExpression)
+        text = text.replacingOccurrences(of: "`", with: "")
+        text = text.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"^#{1,6}\s*"#, with: "", options: [.regularExpression, .anchored])
+        text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s*"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "**", with: "")
+        text = text.replacingOccurrences(of: "__", with: "")
+        text = text.replacingOccurrences(of: #"(?m)^[-*]\s+"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func requestsScreenReply(_ request: String) -> Bool {

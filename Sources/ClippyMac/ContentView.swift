@@ -43,6 +43,11 @@ struct ContentView: View {
     @State private var compactInputFocused = false
     @State private var compactPanel: CompactPanel = .home
     @State private var showHistory = false
+    /// Snapshot of the draft the moment dictation starts, so live transcript
+    /// updates append to whatever the user already typed instead of
+    /// replacing it outright — `SpeechService.transcript` resets to "" at
+    /// the start of every dictation session.
+    @State private var draftBeforeDictation = ""
 
     private let suggestions = [
         "Help me think through an idea",
@@ -89,9 +94,17 @@ struct ContentView: View {
             ChatHistoryView()
                 .environmentObject(viewModel)
         }
+        .onChange(of: viewModel.speech.isListening) { _, isListening in
+            if isListening { draftBeforeDictation = viewModel.draft }
+        }
         .onChange(of: viewModel.speech.transcript) { _, newValue in
             guard viewModel.speech.isListening || !newValue.isEmpty else { return }
-            viewModel.draft = newValue
+            guard !draftBeforeDictation.isEmpty else {
+                viewModel.draft = newValue
+                return
+            }
+            let needsSpace = !draftBeforeDictation.hasSuffix(" ") && !newValue.isEmpty
+            viewModel.draft = draftBeforeDictation + (needsSpace ? " " : "") + newValue
         }
         .onAppear {
             installPasteMonitor()
