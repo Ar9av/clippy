@@ -2,10 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- ScreenTypingService.performPasteWithSystemEvents sends System Events
-         Apple Events to paste generated text; under the hardened runtime
-         (--options runtime) that requires this entitlement or the request
-         is silently denied. -->
     <key>com.apple.security.automation.apple-events</key>
     <true/>
 </dict>

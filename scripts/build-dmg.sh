@@ -55,6 +55,12 @@ else
     SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 fi
 echo "Signing with: $SIGN_IDENTITY"
+# Clippy.entitlements grants com.apple.security.automation.apple-events —
+# ScreenTypingService.performPasteWithSystemEvents sends System Events Apple
+# Events to paste generated text, and under the hardened runtime
+# (--options runtime below) that requires this entitlement or the request is
+# silently denied. Keep the entitlements plist itself comment-free: AMFI's
+# entitlements parser (unlike a general plist parser) rejects XML comments.
 codesign --force --options runtime --entitlements "$SCRIPT_DIR/Clippy.entitlements" --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --strict --verbose=2 "$APP_DIR"
 
