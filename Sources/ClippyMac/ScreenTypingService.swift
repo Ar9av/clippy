@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ClippyCore
 import Foundation
 
 enum ScreenTypingError: LocalizedError {

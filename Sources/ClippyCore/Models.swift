@@ -1,14 +1,14 @@
 import Foundation
 
-enum AIProvider: String, CaseIterable, Codable, Identifiable {
+public enum AIProvider: String, CaseIterable, Codable, Identifiable {
     case claudeCLI
     case codexCLI
     case openAI
     case anthropic
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .claudeCLI: "Claude Code"
         case .codexCLI: "Codex"
@@ -17,7 +17,7 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    var shortTitle: String {
+    public var shortTitle: String {
         switch self {
         case .claudeCLI: "Claude"
         case .codexCLI: "Codex"
@@ -26,7 +26,7 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .claudeCLI:
             "Uses your locally installed and authenticated Claude Code CLI."
@@ -39,11 +39,11 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    var needsAPIKey: Bool {
+    public var needsAPIKey: Bool {
         self == .openAI || self == .anthropic
     }
 
-    var defaultModel: String {
+    public var defaultModel: String {
         switch self {
         case .claudeCLI, .codexCLI: ""
         case .openAI: "gpt-4.1-mini"
@@ -52,18 +52,18 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-struct ChatMessage: Identifiable, Codable, Equatable {
-    enum Role: String, Codable {
+public struct ChatMessage: Identifiable, Codable, Equatable {
+    public enum Role: String, Codable {
         case user
         case assistant
     }
 
-    let id: UUID
-    let role: Role
-    let content: String
-    let createdAt: Date
+    public let id: UUID
+    public let role: Role
+    public let content: String
+    public let createdAt: Date
 
-    init(id: UUID = UUID(), role: Role, content: String, createdAt: Date = Date()) {
+    public init(id: UUID = UUID(), role: Role, content: String, createdAt: Date = Date()) {
         self.id = id
         self.role = role
         self.content = content
@@ -71,31 +71,31 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     }
 }
 
-struct ArchivedChatSession: Identifiable, Codable, Equatable {
-    let id: UUID
-    let endedAt: Date
-    let messages: [ChatMessage]
+public struct ArchivedChatSession: Identifiable, Codable, Equatable {
+    public let id: UUID
+    public let endedAt: Date
+    public let messages: [ChatMessage]
 
-    init(id: UUID = UUID(), endedAt: Date = Date(), messages: [ChatMessage]) {
+    public init(id: UUID = UUID(), endedAt: Date = Date(), messages: [ChatMessage]) {
         self.id = id
         self.endedAt = endedAt
         self.messages = messages
     }
 
-    var title: String {
+    public var title: String {
         messages.first(where: { $0.role == .user })?.content
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n").first.map(String.init)
             ?? "Conversation"
     }
 
-    var preview: String {
+    public var preview: String {
         let title = self.title
         return title.count > 80 ? String(title.prefix(80)) + "…" : title
     }
 }
 
-enum ScreenPlanAction: String, Codable {
+public enum ScreenPlanAction: String, Codable {
     case click
     case type
     case wait
@@ -112,7 +112,7 @@ enum ScreenPlanAction: String, Codable {
 
 /// The only keystrokes a plan may send. Anything that could submit, delete, or
 /// confirm is absent by construction rather than filtered later.
-enum ScreenPlanKey: String, Codable, CaseIterable {
+public enum ScreenPlanKey: String, Codable, CaseIterable {
     case tab
     case escape
     case up
@@ -120,7 +120,7 @@ enum ScreenPlanKey: String, Codable, CaseIterable {
     case left
     case right
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .tab: "Tab"
         case .escape: "Escape"
@@ -132,7 +132,7 @@ enum ScreenPlanKey: String, Codable, CaseIterable {
     }
 
     /// Virtual key codes, from `Carbon/Events.h`.
-    var keyCode: UInt16 {
+    public var keyCode: UInt16 {
         switch self {
         case .tab: 48
         case .escape: 53
@@ -146,7 +146,7 @@ enum ScreenPlanKey: String, Codable, CaseIterable {
 
 /// Where a step got to. Drives the live checklist in the plan banner, so a
 /// long sequence shows what already ran and exactly where it stopped.
-enum ScreenPlanStepStatus: String, Codable, Equatable {
+public enum ScreenPlanStepStatus: String, Codable, Equatable {
     case pending
     case running
     case done
@@ -154,14 +154,14 @@ enum ScreenPlanStepStatus: String, Codable, Equatable {
     case skipped
 }
 
-struct ScreenPlanStep: Identifiable, Codable, Equatable {
-    let id = UUID()
-    let action: ScreenPlanAction
-    let target: String?
-    let text: String?
-    let seconds: Double?
-    let app: String?
-    let key: ScreenPlanKey?
+public struct ScreenPlanStep: Identifiable, Codable, Equatable {
+    public let id = UUID()
+    public let action: ScreenPlanAction
+    public let target: String?
+    public let text: String?
+    public let seconds: Double?
+    public let app: String?
+    public let key: ScreenPlanKey?
     /// Optional screen-point fallback for `.click` and `.type`: the exact
     /// pixel the model picked off the screenshot, in the same coordinate
     /// space as the frames in "Visible actionable controls". Used when
@@ -170,8 +170,8 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
     /// exact AX label varies by version, and can collide with a page's own
     /// look-alike search box). Clippy clicks the exact point directly
     /// instead of resolving `target` through the accessibility tree.
-    let x: Double?
-    let y: Double?
+    public let x: Double?
+    public let y: Double?
     /// `.type` only, and only honored when `AutomationSafety` confirms this
     /// is text (a URL or a plain search query) typed into a browser's own
     /// address/search field — see `AutomationSafety.isSafeAddressBarSubmit`.
@@ -179,9 +179,9 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
     /// way sending, buying, or deleting is, so it's exempted from the
     /// no-Return rule on `ScreenPlanKey`, but only for exactly this case,
     /// not as a general submit key.
-    let pressReturnAfter: Bool?
+    public let pressReturnAfter: Bool?
 
-    init(
+    public init(
         action: ScreenPlanAction,
         target: String? = nil,
         text: String? = nil,
@@ -215,7 +215,7 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
         case pressReturnAfter
     }
 
-    var displayText: String {
+    public var displayText: String {
         switch action {
         case .click:
             "Click “\(target ?? "control")”"
@@ -231,22 +231,22 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
     }
 }
 
-struct PendingScreenPlan: Identifiable, Codable, Equatable {
-    let id = UUID()
-    let summary: String
-    let steps: [ScreenPlanStep]
+public struct PendingScreenPlan: Identifiable, Codable, Equatable {
+    public let id = UUID()
+    public let summary: String
+    public let steps: [ScreenPlanStep]
     /// When this plan was created — never decoded from a model response
     /// (the JSON never includes it); used to refuse confirming a plan that's
     /// sat around too long, rather than letting an old banner get triggered
     /// by an unrelated later "ok".
-    var createdAt: Date = Date()
+    public var createdAt: Date = Date()
     /// Set once the plan has actually been run to completion, failure, or a
     /// stall. A plan that finished (in any of those ways) is kept visible so
     /// the user can see what happened, but must never be re-run — neither by
     /// the banner's "Run plan" button nor by a later affirmative message.
-    var hasExecuted = false
+    public var hasExecuted = false
 
-    init(summary: String, steps: [ScreenPlanStep]) {
+    public init(summary: String, steps: [ScreenPlanStep]) {
         self.summary = summary
         self.steps = steps
     }
@@ -257,14 +257,14 @@ struct PendingScreenPlan: Identifiable, Codable, Equatable {
     }
 }
 
-enum ClippyError: LocalizedError {
+public enum ClippyError: LocalizedError {
     case missingCLI(String)
     case missingAPIKey(String)
     case emptyResponse
     case processFailed(String)
     case invalidResponse(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingCLI(let name):
             "\(name) is not installed or could not be found. Install it, sign in from Terminal, then try again."

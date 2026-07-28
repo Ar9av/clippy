@@ -1,4 +1,5 @@
 import AppKit
+import ClippyCore
 import Foundation
 
 @MainActor

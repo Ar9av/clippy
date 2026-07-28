@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum ResponsePresentation: Equatable {
+public enum ResponsePresentation: Equatable {
     case compact
     case expanded
     case screenInsert
@@ -9,7 +9,7 @@ enum ResponsePresentation: Equatable {
     case screenPlanStep
     case screenReply
 
-    var instructions: String {
+    public var instructions: String {
         switch self {
         case .compact:
             """
@@ -61,14 +61,14 @@ enum ResponsePresentation: Equatable {
         }
     }
 
-    func prepare(_ response: String) -> String {
+    public func prepare(_ response: String) -> String {
         guard self == .compact || self == .screenReply else {
             return response.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return Self.compactText(response, limit: self == .screenReply ? 340 : 120)
     }
 
-    static func compactText(_ response: String, limit: Int = 120) -> String {
+    public static func compactText(_ response: String, limit: Int = 120) -> String {
         var text = response
             .replacingOccurrences(of: "```", with: "")
             .replacingOccurrences(of: "**", with: "")
@@ -134,21 +134,21 @@ private final class RunningProcess: @unchecked Sendable {
     }
 }
 
-enum AIService {
-    enum ScreenDirectiveKind {
+public enum AIService {
+    public enum ScreenDirectiveKind {
         case guide
         case click
     }
 
-    struct ScreenDirective {
-        let kind: ScreenDirectiveKind
-        let target: String
-        let response: String
+    public struct ScreenDirective {
+        public let kind: ScreenDirectiveKind
+        public let target: String
+        public let response: String
     }
 
-    struct ParsedScreenPlan {
-        let plan: PendingScreenPlan
-        let response: String
+    public struct ParsedScreenPlan {
+        public let plan: PendingScreenPlan
+        public let response: String
     }
 
     private static let systemPrompt = """
@@ -190,7 +190,7 @@ enum AIService {
 
     private static let screenTypingMarker = "[[CLIPPY_TYPE]]"
 
-    static func screenInsertionText(from response: String) -> String? {
+    public static func screenInsertionText(from response: String) -> String? {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(screenTypingMarker) else { return nil }
         let text = trimmed.dropFirst(screenTypingMarker.count)
@@ -198,7 +198,7 @@ enum AIService {
         return text.isEmpty ? nil : text
     }
 
-    static func screenDirective(from response: String) -> ScreenDirective? {
+    public static func screenDirective(from response: String) -> ScreenDirective? {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         let patterns: [(ScreenDirectiveKind, String)] = [
             (.guide, #"^\[\[CLIPPY_GUIDE:([^\]]+)\]\]"#),
@@ -282,7 +282,7 @@ enum AIService {
         return (json, trailingText)
     }
 
-    static func screenPlan(from response: String, bounds: CGRect? = nil, scale: CGFloat? = nil) -> ParsedScreenPlan? {
+    public static func screenPlan(from response: String, bounds: CGRect? = nil, scale: CGFloat? = nil) -> ParsedScreenPlan? {
         guard let extracted = extractPlanJSON(from: response),
               let data = extracted.json.data(using: .utf8),
               let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
@@ -301,7 +301,7 @@ enum AIService {
     /// must have at least one step to be runnable), which is correct for
     /// execution but previously meant the model's stop reason was silently
     /// discarded — this sibling recovers it instead.
-    static func screenPlanStop(from response: String) -> String? {
+    public static func screenPlanStop(from response: String) -> String? {
         guard let extracted = extractPlanJSON(from: response),
               let data = extracted.json.data(using: .utf8),
               let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
@@ -312,7 +312,7 @@ enum AIService {
         return summary.isEmpty ? nil : summary
     }
 
-    static func screenPlanFallbackResponse(from response: String) -> String? {
+    public static func screenPlanFallbackResponse(from response: String) -> String? {
         let marker = "[[CLIPPY_PLAN]]"
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(marker) else { return nil }
@@ -337,7 +337,7 @@ enum AIService {
         return "Open the target app so the destination field is visible, then ask me again."
     }
 
-    static func screenPlanNoTargetResponse(from response: String) -> String? {
+    public static func screenPlanNoTargetResponse(from response: String) -> String? {
         let marker = "[[CLIPPY_NO_TARGET]]"
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(marker) else { return nil }
@@ -348,7 +348,7 @@ enum AIService {
             : message
     }
 
-    static func asksForScreenAttachment(_ response: String) -> Bool {
+    public static func asksForScreenAttachment(_ response: String) -> Bool {
         let normalized = response.lowercased()
         let attachmentAsk = [
             "attach a screenshot", "attach the screenshot", "attach a screen context",
@@ -360,7 +360,7 @@ enum AIService {
         return attachmentAsk.contains { normalized.contains($0) }
     }
 
-    static func reply(
+    public static func reply(
         provider: AIProvider,
         messages: [ChatMessage],
         model: String,
@@ -402,7 +402,7 @@ enum AIService {
         }
     }
 
-    static func cliAvailable(for provider: AIProvider) -> Bool {
+    public static func cliAvailable(for provider: AIProvider) -> Bool {
         switch provider {
         case .claudeCLI: findExecutable(named: "claude") != nil
         case .codexCLI: findExecutable(named: "codex") != nil

@@ -1,4 +1,5 @@
 import AppKit
+import ClippyCore
 
 /// End-to-end check that a multi-step plan really drives another app.
 /// Unit tests cover the sequencing rules with a mock; this exercises the same

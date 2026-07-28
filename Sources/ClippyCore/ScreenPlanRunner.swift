@@ -5,7 +5,7 @@ import CoreGraphics
 /// `ScreenAwarenessService` keeps the sequencing rules — ordering, validation,
 /// stop-on-failure, cancellation — testable without accessibility permission.
 @MainActor
-protocol ScreenStepPerforming: AnyObject {
+public protocol ScreenStepPerforming: AnyObject {
     func openApp(named name: String) async throws
     func click(_ target: String) async throws
     /// Click at an exact screen point instead of resolving `target` through
@@ -33,52 +33,20 @@ protocol ScreenStepPerforming: AnyObject {
 }
 
 extension ScreenStepPerforming {
-    func click(_ target: String, at point: CGPoint) async throws {
+    public func click(_ target: String, at point: CGPoint) async throws {
         try await click(target)
     }
 
-    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
+    public func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
         try await type(text, into: target)
     }
 
-    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
+    public func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
         try await type(text, into: target, pressReturnAfter: pressReturnAfter)
     }
 }
 
-/// The live implementation: every step goes through the same accessibility
-/// service the single-step paths use, including its safety checks.
-extension ScreenAwarenessService: ScreenStepPerforming {
-    func openApp(named name: String) async throws {
-        try await activateApp(named: name)
-    }
-
-    func click(_ target: String) async throws {
-        try await runClick(matching: target)
-    }
-
-    func click(_ target: String, at point: CGPoint) async throws {
-        try await clickAtPoint(point, label: target)
-    }
-
-    func type(_ text: String, into target: String) async throws {
-        try await put(text, into: target)
-    }
-
-    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
-        try await put(text, into: target, pressReturnAfter: pressReturnAfter)
-    }
-
-    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
-        try await putAtPoint(text, at: point, label: target, pressReturnAfter: pressReturnAfter)
-    }
-
-    func idle(_ seconds: Double) async throws {
-        try await Task.sleep(for: .seconds(seconds))
-    }
-}
-
-enum ScreenPlanError: LocalizedError, Equatable {
+public enum ScreenPlanError: LocalizedError, Equatable {
     case empty
     case tooManySteps(Int)
     case malformedStep(Int)
@@ -87,7 +55,7 @@ enum ScreenPlanError: LocalizedError, Equatable {
     case outOfBounds(Int, String)
     case stepFailed(index: Int, description: String, reason: String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .empty:
             "That plan has no steps."
@@ -111,17 +79,17 @@ enum ScreenPlanError: LocalizedError, Equatable {
 /// progress as it goes. Any failure stops the sequence: a half-navigated
 /// interface is not a safe place to keep clicking.
 @MainActor
-final class ScreenPlanRunner {
-    nonisolated static let stepLimit = 10
-    nonisolated static let waitRange: ClosedRange<Double> = 0.1...8.0
+public final class ScreenPlanRunner {
+    nonisolated public static let stepLimit = 10
+    nonisolated public static let waitRange: ClosedRange<Double> = 0.1...8.0
 
-    struct Progress: Equatable {
-        let index: Int
-        let total: Int
-        let step: ScreenPlanStep
-        let status: ScreenPlanStepStatus
+    public struct Progress: Equatable {
+        public let index: Int
+        public let total: Int
+        public let step: ScreenPlanStep
+        public let status: ScreenPlanStepStatus
 
-        var message: String {
+        public var message: String {
             switch status {
             case .running: "Step \(index + 1) of \(total): \(step.displayText)"
             case .done: "Step \(index + 1) of \(total) done"
@@ -136,7 +104,7 @@ final class ScreenPlanRunner {
     /// before the next target is resolved.
     private let settleSeconds: Double
 
-    init(performer: ScreenStepPerforming, settleSeconds: Double = 0.45) {
+    public init(performer: ScreenStepPerforming, settleSeconds: Double = 0.45) {
         self.performer = performer
         self.settleSeconds = settleSeconds
     }
@@ -145,7 +113,7 @@ final class ScreenPlanRunner {
     /// runs, so an unsafe step can't slip in between the two. `bounds`, when
     /// given, is the captured window's frame — any step-supplied x/y outside
     /// it (with a small margin) is rejected rather than dispatched blind.
-    nonisolated static func validate(_ plan: PendingScreenPlan, bounds: CGRect? = nil, scale: CGFloat? = nil) throws {
+    nonisolated public static func validate(_ plan: PendingScreenPlan, bounds: CGRect? = nil, scale: CGFloat? = nil) throws {
         guard !plan.steps.isEmpty else { throw ScreenPlanError.empty }
         guard plan.steps.count <= stepLimit else {
             throw ScreenPlanError.tooManySteps(stepLimit)
@@ -215,14 +183,14 @@ final class ScreenPlanRunner {
         }
         guard let bounds else { return }
         let point = CGPoint(x: x, y: y)
-        let resolved = ScreenAwarenessService.resolvedPoint(point, windowFrame: bounds, scale: scale)
-        guard ScreenAwarenessService.isWithinBounds(resolved, windowFrame: bounds) else {
+        let resolved = CoordinateSpace.resolvedPoint(point, windowFrame: bounds, scale: scale)
+        guard CoordinateSpace.isWithinBounds(resolved, windowFrame: bounds) else {
             throw ScreenPlanError.outOfBounds(index, target)
         }
     }
 
     @discardableResult
-    func run(
+    public func run(
         _ plan: PendingScreenPlan,
         onProgress: (Progress) -> Void = { _ in }
     ) async throws -> Int {

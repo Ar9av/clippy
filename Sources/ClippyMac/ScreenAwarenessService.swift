@@ -1,85 +1,7 @@
 import AppKit
 import ApplicationServices
+import ClippyCore
 import ScreenCaptureKit
-
-struct ScreenElementSummary: Identifiable, Equatable {
-    let id: UUID
-    let label: String
-    let role: String
-    let frame: CGRect
-    let enabled: Bool
-
-    var contextLine: String {
-        let center = CGPoint(x: frame.midX, y: frame.midY)
-        return "- \(role): \"\(label)\" at (\(Int(center.x)), \(Int(center.y)))"
-            + (enabled ? "" : " [disabled]")
-    }
-}
-
-struct ScreenContext {
-    let appName: String
-    let windowTitle: String
-    let screenshotURL: URL
-    let contextURL: URL
-    let elements: [ScreenElementSummary]
-    /// The captured window's frame in the same global point space as
-    /// `elements`' frames — used to validate/clamp any model-supplied x/y
-    /// coordinates before they're ever dispatched as a click.
-    let windowFrame: CGRect
-    /// The screenshot's pixel-per-point scale (e.g. 2 on a Retina display).
-    /// A model that reads coordinates off the screenshot image itself
-    /// (rather than the point-space list in the context text) will produce
-    /// pixel coordinates roughly `scale` times too large — this lets the
-    /// dispatch path detect and correct that.
-    let screenshotScale: CGFloat
-}
-
-struct PendingScreenAction: Identifiable, Equatable {
-    let id = UUID()
-    let label: String
-    let detail: String
-}
-
-enum ScreenAwarenessError: LocalizedError {
-    case accessibilityPermission
-    case screenRecordingPermission
-    case noExternalApp
-    case noWindow
-    case targetNotFound(String)
-    case targetUnavailable
-    case unsafeAction(String)
-    case notEditable(String)
-    case restrictedApp(String)
-    case appNotFound(String)
-    case textNotAccepted(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .accessibilityPermission:
-            "Allow Clippy in System Settings → Privacy & Security → Accessibility."
-        case .screenRecordingPermission:
-            "Allow Clippy in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen Clippy."
-        case .noExternalApp:
-            "Open the app you want help with, then ask Clippy to look again."
-        case .noWindow:
-            "I couldn’t find a visible window to inspect."
-        case .targetNotFound(let label):
-            "I couldn’t find “\(label)” on the current screen."
-        case .targetUnavailable:
-            "That control moved or disappeared. Ask Clippy to look again."
-        case .unsafeAction(let label):
-            "Clippy won’t automatically activate “\(label)”. Please do that final step yourself."
-        case .notEditable(let label):
-            "“\(label)” is not an editable text field."
-        case .restrictedApp(let name):
-            "Clippy won’t drive \(name) — terminals and agent CLIs run real commands."
-        case .appNotFound(let name):
-            "I couldn’t find an app called “\(name)”."
-        case .textNotAccepted(let label):
-            "“\(label)” didn’t accept the text. Click into it yourself and ask me again."
-        }
-    }
-}
 
 @MainActor
 final class ScreenAwarenessService {
@@ -415,8 +337,8 @@ final class ScreenAwarenessService {
         guard !AutomationSafety.isFinalAction(label) else {
             throw ScreenAwarenessError.unsafeAction(label)
         }
-        let point = Self.resolvedPoint(point, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
-        guard Self.isWithinBounds(point, windowFrame: lastWindowFrame) else {
+        let point = CoordinateSpace.resolvedPoint(point, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
+        guard CoordinateSpace.isWithinBounds(point, windowFrame: lastWindowFrame) else {
             throw ScreenAwarenessError.targetUnavailable
         }
         // This bypasses `refreshSpatialMap`'s label resolution entirely, so
@@ -1043,29 +965,6 @@ final class ScreenAwarenessService {
             && settable.boolValue
     }
 
-    /// Small allowance for a point landing just outside the captured window
-    /// frame — window chrome/shadow rounding, not a real coordinate-space bug.
-    nonisolated private static let boundsMargin: CGFloat = 4
-
-    /// If a model reads coordinates directly off the screenshot image
-    /// instead of the point-space list in the context text, the result is
-    /// roughly `scale`x too large. Detect that case — the raw point falls
-    /// outside the window frame, but dividing by scale brings it back
-    /// inside — and correct it before dispatch.
-    nonisolated static func resolvedPoint(_ point: CGPoint, windowFrame: CGRect?, scale: CGFloat?) -> CGPoint {
-        guard let windowFrame, let scale, scale > 1,
-              !isWithinBounds(point, windowFrame: windowFrame) else {
-            return point
-        }
-        let scaled = CGPoint(x: point.x / scale, y: point.y / scale)
-        return isWithinBounds(scaled, windowFrame: windowFrame) ? scaled : point
-    }
-
-    nonisolated static func isWithinBounds(_ point: CGPoint, windowFrame: CGRect?) -> Bool {
-        guard let windowFrame else { return true }
-        return windowFrame.insetBy(dx: -boundsMargin, dy: -boundsMargin).contains(point)
-    }
-
     private static func isEditableRole(_ role: String) -> Bool {
         ["TextField", "TextArea", "ComboBox"].contains(role)
     }
@@ -1276,6 +1175,38 @@ final class ScreenAwarenessService {
             .reduce(into: [String]()) { result, name in
                 if !result.contains(name) { result.append(name) }
             }
+    }
+}
+
+/// The live implementation: every step goes through the same accessibility
+/// service the single-step paths use, including its safety checks.
+extension ScreenAwarenessService: ScreenStepPerforming {
+    func openApp(named name: String) async throws {
+        try await activateApp(named: name)
+    }
+
+    func click(_ target: String) async throws {
+        try await runClick(matching: target)
+    }
+
+    func click(_ target: String, at point: CGPoint) async throws {
+        try await clickAtPoint(point, label: target)
+    }
+
+    func type(_ text: String, into target: String) async throws {
+        try await put(text, into: target)
+    }
+
+    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
+        try await put(text, into: target, pressReturnAfter: pressReturnAfter)
+    }
+
+    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
+        try await putAtPoint(text, at: point, label: target, pressReturnAfter: pressReturnAfter)
+    }
+
+    func idle(_ seconds: Double) async throws {
+        try await Task.sleep(for: .seconds(seconds))
     }
 }
 

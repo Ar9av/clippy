@@ -1,10 +1,10 @@
 import Foundation
 import Security
 
-enum KeychainStore {
+public enum KeychainStore {
     private static let service = "com.ar9av.clippy"
 
-    static func save(_ value: String, account: String) throws {
+    public static func save(_ value: String, account: String) throws {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -25,7 +25,7 @@ enum KeychainStore {
         }
     }
 
-    static func read(account: String) -> String? {
+    public static func read(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -40,7 +40,7 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func delete(account: String) {
+    public static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

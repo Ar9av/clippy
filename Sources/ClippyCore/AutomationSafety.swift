@@ -8,12 +8,12 @@ import AppKit
 /// address/search bar (see `isSafeAddressBarSubmit`), so Clippy can still type
 /// into a terminal but can't press Enter to submit it. Re-add bundle
 /// identifiers/name fragments here to restore the restriction.
-enum AutomationSafety {
+public enum AutomationSafety {
     private static let blockedBundleIdentifiers: Set<String> = []
 
     private static let blockedNameFragments: [String] = []
 
-    static func isRestricted(_ application: NSRunningApplication) -> Bool {
+    public static func isRestricted(_ application: NSRunningApplication) -> Bool {
         if let bundleIdentifier = application.bundleIdentifier,
            blockedBundleIdentifiers.contains(bundleIdentifier) {
             return true
@@ -23,7 +23,7 @@ enum AutomationSafety {
 
     /// Used when a plan names an app that isn't running yet, so a restricted
     /// target is refused before it is ever launched.
-    static func isRestrictedName(_ name: String) -> Bool {
+    public static func isRestrictedName(_ name: String) -> Bool {
         let normalized = name.lowercased()
         return blockedNameFragments.contains { normalized.contains($0) }
     }
@@ -38,7 +38,7 @@ enum AutomationSafety {
         "password", "passcode", "confirm", "checkout", "sign out", "log out"
     ]
 
-    static func isFinalAction(_ label: String) -> Bool {
+    public static func isFinalAction(_ label: String) -> Bool {
         containsWord(label, in: finalActionFragments)
     }
 
@@ -65,7 +65,7 @@ enum AutomationSafety {
     /// secure text field. Kept alongside the label-based checks so the
     /// AX-role-based check (`ScreenAwarenessService.put`) and any future
     /// label-only callers share the same judgment about what counts as secure.
-    static func isSecureField(role: String, subrole: String) -> Bool {
+    public static func isSecureField(role: String, subrole: String) -> Bool {
         role == "AXSecureTextField" || subrole == "AXSecureTextField"
     }
 
@@ -97,7 +97,7 @@ enum AutomationSafety {
     /// fields also contain that word. A step that doesn't satisfy this must
     /// fall back to leaving the text typed and letting the user press Return
     /// themselves.
-    static func isSafeAddressBarSubmit(target: String, text: String) -> Bool {
+    public static func isSafeAddressBarSubmit(target: String, text: String) -> Bool {
         let normalizedTarget = target.lowercased()
         guard !formFieldFragments.contains(where: normalizedTarget.contains) else {
             return false

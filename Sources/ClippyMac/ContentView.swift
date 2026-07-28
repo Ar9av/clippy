@@ -1,4 +1,5 @@
 import AppKit
+import ClippyCore
 import SwiftUI
 
 private enum CompactPanel {

@@ -11,8 +11,13 @@ let package = Package(
         .executable(name: "Clippy", targets: ["ClippyMac"])
     ],
     targets: [
+        .target(
+            name: "ClippyCore",
+            path: "Sources/ClippyCore"
+        ),
         .executableTarget(
             name: "ClippyMac",
+            dependencies: ["ClippyCore"],
             path: "Sources/ClippyMac",
             resources: [
                 .copy("Resources/ClippySprites.png"),
@@ -27,7 +32,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ClippyMacTests",
-            dependencies: ["ClippyMac"],
+            dependencies: ["ClippyMac", "ClippyCore"],
             path: "Tests/ClippyMacTests"
         )
     ]

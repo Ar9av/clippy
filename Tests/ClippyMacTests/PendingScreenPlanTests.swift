@@ -1,5 +1,5 @@
 import XCTest
-@testable import ClippyMac
+@testable import ClippyCore
 
 final class PendingScreenPlanTests: XCTestCase {
     func testNewPlanDefaultsToUnexecutedAndFreshlyCreated() {

@@ -1,5 +1,5 @@
 import XCTest
-@testable import ClippyMac
+@testable import ClippyCore
 
 /// Records what a plan asked the screen to do, without touching the screen.
 @MainActor
