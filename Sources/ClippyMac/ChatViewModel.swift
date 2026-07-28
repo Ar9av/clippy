@@ -262,6 +262,10 @@ final class ChatViewModel: ObservableObject {
         }
 
         currentRequestTask = Task {
+            // Declared outside the `do` block so the `catch` below can also
+            // see it — a stream that errors out partway through must not
+            // leave an empty placeholder bubble behind.
+            var streamedMessageID: UUID?
             do {
                 var effectiveAttachments = attachments
                 var capturedScreen: ScreenContext?
@@ -299,14 +303,37 @@ final class ChatViewModel: ObservableObject {
                     currentRequestTask = nil
                     return
                 }
-                var response = try await AIService.reply(
-                    provider: selectedProvider,
-                    messages: history,
-                    model: selectedModel,
-                    apiKey: key,
-                    attachments: effectiveAttachments,
-                    presentation: presentation
-                )
+                var response: String
+                // Streaming only covers the plain-answer path: Anthropic,
+                // no attachments (screenshots/pasted files still go through
+                // the existing non-streaming AIService.reply, which already
+                // knows how to encode them), and a presentation the user
+                // will actually watch fill in live. Screen-action
+                // presentations need the complete response before any
+                // marker/plan parsing can happen, so there's nothing
+                // meaningful to stream there.
+                if selectedProvider == .anthropic,
+                   let key, !key.isEmpty,
+                   effectiveAttachments.isEmpty,
+                   presentation == .compact || presentation == .expanded {
+                    let streamed = try await streamAnthropicReply(
+                        history: history,
+                        model: selectedModel,
+                        apiKey: key,
+                        presentation: presentation
+                    )
+                    response = streamed.text
+                    streamedMessageID = streamed.messageID
+                } else {
+                    response = try await AIService.reply(
+                        provider: selectedProvider,
+                        messages: history,
+                        model: selectedModel,
+                        apiKey: key,
+                        attachments: effectiveAttachments,
+                        presentation: presentation
+                    )
+                }
                 if shouldDraftScreenReply, AIService.asksForScreenAttachment(response) {
                     // Some CLI providers occasionally ignore image attachments on
                     // their first pass. Retry once with an unambiguous instruction
@@ -360,7 +387,16 @@ final class ChatViewModel: ObservableObject {
                 let preparedResponse = signaledInsertion
                     ?? presentation.prepare(responseWithoutDirective)
                 let willWriteToScreen = shouldWriteToScreen || signaledInsertion != nil
-                messages.append(ChatMessage(role: .assistant, content: preparedResponse))
+                // A streamed reply already exists in `messages` as a
+                // live-updating placeholder — finalize its content (which
+                // may differ slightly from the raw streamed text once
+                // `presentation.prepare` trims/compacts it) rather than
+                // appending a second copy of the same answer.
+                if let streamedMessageID, let index = messages.firstIndex(where: { $0.id == streamedMessageID }) {
+                    messages[index].content = preparedResponse
+                } else {
+                    messages.append(ChatMessage(role: .assistant, content: preparedResponse))
+                }
                 persistMessages()
                 // An explicit [[CLIPPY_GUIDE]]/[[CLIPPY_CLICK]] directive always wins
                 // over the generic "type into screen" heuristic — otherwise a
@@ -448,6 +484,14 @@ final class ChatViewModel: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                // A stream that errors before any text arrived left an empty
+                // placeholder bubble in the transcript — remove it rather
+                // than showing a blank assistant message next to the error.
+                if let streamedMessageID,
+                   let index = messages.firstIndex(where: { $0.id == streamedMessageID }),
+                   messages[index].content.isEmpty {
+                    messages.remove(at: index)
+                }
                 errorMessage = error.localizedDescription
                 activityMessage = "I hit a snag."
                 announce("Clippy could not complete the request. \(error.localizedDescription)")
@@ -456,6 +500,50 @@ final class ChatViewModel: ObservableObject {
             isLoading = false
             currentRequestTask = nil
         }
+    }
+
+    /// Appends a live-updating placeholder assistant message and fills it in
+    /// as text deltas arrive from `AnthropicClient.stream`, instead of the
+    /// single blocking round-trip every provider used before. Only ever
+    /// called for plain-answer presentations with no attachments (see the
+    /// call site) — screen-action presentations still need the complete
+    /// response before any marker/plan parsing can happen.
+    private func streamAnthropicReply(
+        history: [ChatMessage],
+        model: String,
+        apiKey: String,
+        presentation: ResponsePresentation
+    ) async throws -> (text: String, messageID: UUID) {
+        let recent = Array(history.suffix(24))
+        let trimmed = recent.firstIndex(where: { $0.role == .user }).map { Array(recent[$0...]) } ?? recent
+        let completionMessages = trimmed.map {
+            CompletionMessage(role: $0.role == .user ? .user : .assistant, content: [.text($0.content)])
+        }
+        let request = CompletionRequest(
+            system: AIService.systemPrompt + "\n\n" + presentation.instructions,
+            messages: completionMessages,
+            model: model
+        )
+
+        let placeholder = ChatMessage(role: .assistant, content: "")
+        messages.append(placeholder)
+        let index = messages.count - 1
+
+        let client = AnthropicClient(apiKey: apiKey)
+        var accumulated = ""
+        for try await event in client.stream(request) {
+            try Task.checkCancellation()
+            switch event {
+            case .textDelta(let delta):
+                accumulated += delta
+                if messages.indices.contains(index) {
+                    messages[index].content = accumulated
+                }
+            case .completed(let response):
+                if !response.text.isEmpty { accumulated = response.text }
+            }
+        }
+        return (accumulated, placeholder.id)
     }
 
     private func startActivityClock(hasAttachments: Bool) {

@@ -151,7 +151,10 @@ public enum AIService {
         public let response: String
     }
 
-    private static let systemPrompt = """
+    /// Exposed (not just internal to `reply`) so the streaming path can
+    /// build the exact same system prompt for a live-updating request
+    /// instead of duplicating it.
+    public static let systemPrompt = """
     You are Clippy, a friendly desktop AI assistant for macOS. Be genuinely helpful, warm, concise, and practical. \
     You can help with writing, brainstorming, explaining, planning, debugging, and everyday questions. \
     Clippy can insert text into the last editable field the user focused. When the user asks you to type, enter, paste, \

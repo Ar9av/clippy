@@ -60,7 +60,9 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
 
     public let id: UUID
     public let role: Role
-    public let content: String
+    /// `var`, not `let` — the streaming path mutates a message's content
+    /// in place as text deltas arrive, rather than replacing the message.
+    public var content: String
     public let createdAt: Date
 
     public init(id: UUID = UUID(), role: Role, content: String, createdAt: Date = Date()) {
