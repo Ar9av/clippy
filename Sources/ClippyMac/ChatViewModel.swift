@@ -266,7 +266,11 @@ final class ChatViewModel: ObservableObject {
                 }
                 try Task.checkCancellation()
                 let signaledInsertion = AIService.screenInsertionText(from: response)
-                let parsedScreenPlan = AIService.screenPlan(from: response)
+                let parsedScreenPlan = AIService.screenPlan(
+                    from: response,
+                    bounds: capturedScreen?.windowFrame,
+                    scale: capturedScreen?.screenshotScale
+                )
                 let screenDirective = AIService.screenDirective(from: response)
                 let responseWithoutDirective: String
                 if let parsedScreenPlan {
@@ -809,7 +813,7 @@ final class ChatViewModel: ObservableObject {
         ) else {
             return nil
         }
-        return AIService.screenPlan(from: response)?.plan.steps.first
+        return AIService.screenPlan(from: response, bounds: context.windowFrame, scale: context.screenshotScale)?.plan.steps.first
     }
 
     func cancelPendingScreenPlan() {

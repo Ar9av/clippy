@@ -212,6 +212,46 @@ final class ScreenPlanRunnerTests: XCTestCase {
             ScreenPlanStep(action: .type, target: "Search", text: "display")
         ]))
     }
+
+    // MARK: - Coordinate bounds
+
+    private let windowFrame = CGRect(x: 100, y: 100, width: 800, height: 600)
+
+    func testAcceptsPointsInsideTheWindowFrame() throws {
+        try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .click, target: "Field", x: 200, y: 200)
+        ]), bounds: windowFrame)
+    }
+
+    func testRejectsPointsOutsideTheWindowFrame() {
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .click, target: "Field", x: 5000, y: 5000)
+        ]), bounds: windowFrame)) { error in
+            XCTAssertEqual(error as? ScreenPlanError, .outOfBounds(0, "Field"))
+        }
+    }
+
+    func testRejectsNonFinitePoints() {
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .click, target: "Field", x: .nan, y: 200)
+        ])))
+    }
+
+    func testCorrectsScreenshotPixelCoordinatesBackIntoWindowSpace() throws {
+        // A point that's out of bounds raw, but lands inside the window once
+        // divided by a 2x screenshot scale, is accepted rather than rejected —
+        // this is the "model read pixels off the image" recovery path.
+        let pixelPoint = CGPoint(x: (windowFrame.midX) * 2, y: (windowFrame.midY) * 2)
+        try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .type, target: "Field", text: "hello", x: pixelPoint.x, y: pixelPoint.y)
+        ]), bounds: windowFrame, scale: 2)
+    }
+
+    func testDoesNotValidatePointsWhenNoBoundsGiven() throws {
+        try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .click, target: "Field", x: 99999, y: 99999)
+        ]))
+    }
 }
 
 // MARK: - Plan parsing

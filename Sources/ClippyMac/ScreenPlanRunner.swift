@@ -84,6 +84,7 @@ enum ScreenPlanError: LocalizedError, Equatable {
     case malformedStep(Int)
     case unsafeStep(Int, String)
     case restrictedApp(String)
+    case outOfBounds(Int, String)
     case stepFailed(index: Int, description: String, reason: String)
 
     var errorDescription: String? {
@@ -98,6 +99,8 @@ enum ScreenPlanError: LocalizedError, Equatable {
             "Step \(index + 1) targets “\(target)”. Clippy stops before send, submit, payment, deletion, and password controls."
         case .restrictedApp(let name):
             "Clippy won't drive \(name) — terminals and agent CLIs run real commands."
+        case .outOfBounds(let index, let target):
+            "Step \(index + 1) gave a position for “\(target)” outside the visible window."
         case .stepFailed(let index, let description, let reason):
             "Stopped at step \(index + 1) (\(description)): \(reason)"
         }
@@ -139,8 +142,10 @@ final class ScreenPlanRunner {
     }
 
     /// Checked before the plan is ever shown for approval, and again before it
-    /// runs, so an unsafe step can't slip in between the two.
-    nonisolated static func validate(_ plan: PendingScreenPlan) throws {
+    /// runs, so an unsafe step can't slip in between the two. `bounds`, when
+    /// given, is the captured window's frame — any step-supplied x/y outside
+    /// it (with a small margin) is rejected rather than dispatched blind.
+    nonisolated static func validate(_ plan: PendingScreenPlan, bounds: CGRect? = nil, scale: CGFloat? = nil) throws {
         guard !plan.steps.isEmpty else { throw ScreenPlanError.empty }
         guard plan.steps.count <= stepLimit else {
             throw ScreenPlanError.tooManySteps(stepLimit)
@@ -155,6 +160,7 @@ final class ScreenPlanRunner {
                 guard !AutomationSafety.isFinalAction(target) else {
                     throw ScreenPlanError.unsafeStep(index, target)
                 }
+                try Self.validatePoint(step, target: target, index: index, bounds: bounds, scale: scale)
             case .type:
                 guard let target = step.target?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !target.isEmpty,
@@ -172,6 +178,7 @@ final class ScreenPlanRunner {
                    !AutomationSafety.isSafeAddressBarSubmit(target: target, text: text) {
                     throw ScreenPlanError.unsafeStep(index, target)
                 }
+                try Self.validatePoint(step, target: target, index: index, bounds: bounds, scale: scale)
             case .open:
                 guard let app = step.app?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !app.isEmpty else {
@@ -187,6 +194,30 @@ final class ScreenPlanRunner {
                     throw ScreenPlanError.malformedStep(index)
                 }
             }
+        }
+    }
+
+    /// A step's x/y is optional, but when present it must be a finite point,
+    /// and — when the caller has a window frame to check against — either
+    /// inside that frame or resolvable to a point inside it by dividing out
+    /// the screenshot scale (the same correction applied at dispatch time in
+    /// `ScreenAwarenessService.resolvedPoint`).
+    nonisolated private static func validatePoint(
+        _ step: ScreenPlanStep,
+        target: String,
+        index: Int,
+        bounds: CGRect?,
+        scale: CGFloat?
+    ) throws {
+        guard let x = step.x, let y = step.y else { return }
+        guard x.isFinite, y.isFinite else {
+            throw ScreenPlanError.outOfBounds(index, target)
+        }
+        guard let bounds else { return }
+        let point = CGPoint(x: x, y: y)
+        let resolved = ScreenAwarenessService.resolvedPoint(point, windowFrame: bounds, scale: scale)
+        guard ScreenAwarenessService.isWithinBounds(resolved, windowFrame: bounds) else {
+            throw ScreenPlanError.outOfBounds(index, target)
         }
     }
 

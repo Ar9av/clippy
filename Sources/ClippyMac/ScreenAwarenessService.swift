@@ -22,6 +22,16 @@ struct ScreenContext {
     let screenshotURL: URL
     let contextURL: URL
     let elements: [ScreenElementSummary]
+    /// The captured window's frame in the same global point space as
+    /// `elements`' frames — used to validate/clamp any model-supplied x/y
+    /// coordinates before they're ever dispatched as a click.
+    let windowFrame: CGRect
+    /// The screenshot's pixel-per-point scale (e.g. 2 on a Retina display).
+    /// A model that reads coordinates off the screenshot image itself
+    /// (rather than the point-space list in the context text) will produce
+    /// pixel coordinates roughly `scale` times too large — this lets the
+    /// dispatch path detect and correct that.
+    let screenshotScale: CGFloat
 }
 
 struct PendingScreenAction: Identifiable, Equatable {
@@ -88,6 +98,11 @@ final class ScreenAwarenessService {
     private var resolvedElements: [UUID: ResolvedElement] = [:]
     private var highlightedElementID: UUID?
     private let highlightController = ScreenHighlightController()
+    /// The window frame and screenshot scale from the most recent
+    /// `captureContext()` — used to validate and, if needed, correct
+    /// model-supplied x/y coordinates before a click is ever dispatched.
+    private var lastWindowFrame: CGRect?
+    private var lastScreenshotScale: CGFloat?
 
     private init() {}
 
@@ -235,28 +250,37 @@ final class ScreenAwarenessService {
 
         let windowTitle = window.title?.isEmpty == false ? window.title! : "Untitled"
         let otherApps = Self.otherRunningApplications(excluding: application)
+        let truncationNote = elements.count > 100
+            ? "\n…and \(elements.count - 100) more controls not shown here."
+            : ""
         let spatialText = """
         Current app: \(application.localizedName ?? "Unknown")
         Current window: \(windowTitle)
         Window frame: x \(Int(window.frame.minX)), y \(Int(window.frame.minY)), width \(Int(window.frame.width)), height \(Int(window.frame.height))
+        The screenshot image is \(String(format: "%.0f", scale))x this window's point size (e.g. a point at x=10 in this list is at pixel x=\(String(format: "%.0f", 10 * scale)) in the image) — any x/y you give must be in the point space of this list and the Window frame line above, never raw image pixels.
 
         Other open apps (already running — prefer switching to one of these over launching a new instance, and reuse an already-open tab/document when the task fits it): \
         \(otherApps.isEmpty ? "none" : otherApps.joined(separator: ", "))
 
         Visible actionable controls (screen coordinates):
-        \(elements.prefix(100).map(\.contextLine).joined(separator: "\n"))
+        \(elements.prefix(100).map(\.contextLine).joined(separator: "\n"))\(truncationNote)
 
         Use the screenshot for appearance and this list for precise labels and positions.
         """
         let contextURL = directory.appendingPathComponent("Screen-Context-\(identifier).txt")
         try spatialText.write(to: contextURL, atomically: true, encoding: .utf8)
 
+        lastWindowFrame = window.frame
+        lastScreenshotScale = scale
+
         return ScreenContext(
             appName: application.localizedName ?? "the current app",
             windowTitle: windowTitle,
             screenshotURL: screenshotURL,
             contextURL: contextURL,
-            elements: elements
+            elements: elements,
+            windowFrame: window.frame,
+            screenshotScale: scale
         )
     }
 
@@ -390,6 +414,10 @@ final class ScreenAwarenessService {
     private func guardedRawClick(at point: CGPoint, label: String, highlightLabel: String) async throws {
         guard !AutomationSafety.isFinalAction(label) else {
             throw ScreenAwarenessError.unsafeAction(label)
+        }
+        let point = Self.resolvedPoint(point, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
+        guard Self.isWithinBounds(point, windowFrame: lastWindowFrame) else {
+            throw ScreenAwarenessError.targetUnavailable
         }
         // This bypasses `refreshSpatialMap`'s label resolution entirely, so
         // it needs its own copy of the same check: refuse outright rather
@@ -1013,6 +1041,29 @@ final class ScreenAwarenessService {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success
             && settable.boolValue
+    }
+
+    /// Small allowance for a point landing just outside the captured window
+    /// frame — window chrome/shadow rounding, not a real coordinate-space bug.
+    nonisolated private static let boundsMargin: CGFloat = 4
+
+    /// If a model reads coordinates directly off the screenshot image
+    /// instead of the point-space list in the context text, the result is
+    /// roughly `scale`x too large. Detect that case — the raw point falls
+    /// outside the window frame, but dividing by scale brings it back
+    /// inside — and correct it before dispatch.
+    nonisolated static func resolvedPoint(_ point: CGPoint, windowFrame: CGRect?, scale: CGFloat?) -> CGPoint {
+        guard let windowFrame, let scale, scale > 1,
+              !isWithinBounds(point, windowFrame: windowFrame) else {
+            return point
+        }
+        let scaled = CGPoint(x: point.x / scale, y: point.y / scale)
+        return isWithinBounds(scaled, windowFrame: windowFrame) ? scaled : point
+    }
+
+    nonisolated static func isWithinBounds(_ point: CGPoint, windowFrame: CGRect?) -> Bool {
+        guard let windowFrame else { return true }
+        return windowFrame.insetBy(dx: -boundsMargin, dy: -boundsMargin).contains(point)
     }
 
     private static func isEditableRole(_ role: String) -> Bool {

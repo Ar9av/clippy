@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 enum ResponsePresentation: Equatable {
@@ -45,7 +46,7 @@ enum ResponsePresentation: Equatable {
             The real screen rarely matches a prediction exactly — a menu may have opened somewhere unexpected, a dialog may have appeared, a page may still be loading — so judge only from what is actually visible now, not from what the previous step assumed would happen. \
             Decide the single next step toward the stated goal and return [[CLIPPY_PLAN]] with exactly one step in "steps" (ignore the multi-step format otherwise allowed elsewhere — here only the first step will ever be used, so including more just wastes output). \
             If the goal already looks accomplished, or the screen shows it's not possible to continue safely, return [[CLIPPY_PLAN]] with an empty "steps" array and a one-sentence summary explaining why you stopped. \
-            Every target must exactly match a label in “Visible actionable controls”, or supply "x"/"y" pixel coordinates read directly off the screenshot when a label match would be unreliable. \
+            Every target must exactly match a label in “Visible actionable controls”, or supply "x"/"y" coordinates in that same space (not raw screenshot pixels — see the coordinate note below) when a label match would be unreliable. \
             Do not use [[CLIPPY_TYPE]], Markdown, commentary, or any text outside the JSON. \
             Never return a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — that always ends the sequence, not a step to take.
             """
@@ -223,7 +224,7 @@ enum AIService {
         return nil
     }
 
-    static func screenPlan(from response: String) -> ParsedScreenPlan? {
+    static func screenPlan(from response: String, bounds: CGRect? = nil, scale: CGFloat? = nil) -> ParsedScreenPlan? {
         let marker = "[[CLIPPY_PLAN]]"
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(marker) else { return nil }
@@ -268,7 +269,7 @@ enum AIService {
         guard let end,
               let data = String(remainder[start...end]).data(using: .utf8),
               let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
-              (try? ScreenPlanRunner.validate(plan)) != nil else {
+              (try? ScreenPlanRunner.validate(plan, bounds: bounds, scale: scale)) != nil else {
             return nil
         }
         var responseText = String(remainder[remainder.index(after: end)...])
