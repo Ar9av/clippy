@@ -1,0 +1,13 @@
+{
+  "id": "intent-answer-not-plan",
+  "suite": "intent",
+  "goal": "what's the answer to 2+2? just answer, don't do anything on screen",
+  "context": "Current app: Clippy\nCurrent window: Chat\nWindow frame: x 0, y 0, width 480, height 680\n\nOther open apps: none\n\nVisible actionable controls (screen coordinates):\n(none relevant)\n",
+  "expect": {
+    "kind": "answer"
+  },
+  "recordedResponse": {
+    "tool": null,
+    "text": "2 + 2 is 4."
+  }
+}

@@ -3,7 +3,7 @@ import Foundation
 /// A minimal, dependency-free JSON value used for tool schemas and tool
 /// call input/output, so `CompletionRequest`/`CompletionResponse` can be
 /// `Sendable` and `Equatable` without pulling in `[String: Any]`.
-public indirect enum JSONValue: Equatable, Sendable {
+public indirect enum JSONValue: Equatable, Sendable, Codable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -19,6 +19,43 @@ public indirect enum JSONValue: Equatable, Sendable {
         case .object(let value): value.mapValues(\.foundationValue)
         case .array(let value): value.map(\.foundationValue)
         case .null: NSNull()
+        }
+    }
+
+    /// Manual `Codable` conformance — there's no single associated-value
+    /// shape to synthesize against arbitrary JSON, so this just tries each
+    /// scalar/collection case against a single-value container in turn
+    /// (JSON's own token typing makes the order among scalars irrelevant;
+    /// `decode(Bool.self)` simply throws against a numeric token and vice
+    /// versa).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .null: try container.encodeNil()
         }
     }
 

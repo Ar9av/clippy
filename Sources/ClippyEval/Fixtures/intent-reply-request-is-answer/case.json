@@ -1,0 +1,13 @@
+{
+  "id": "intent-reply-request-is-answer",
+  "suite": "intent",
+  "goal": "answer this question for me: what's the capital of France",
+  "context": "Current app: Clippy\nCurrent window: Chat\nWindow frame: x 0, y 0, width 480, height 680\n\nOther open apps: none\n\nVisible actionable controls (screen coordinates):\n(none relevant)\n",
+  "expect": {
+    "kind": "answer"
+  },
+  "recordedResponse": {
+    "tool": null,
+    "text": "Paris."
+  }
+}

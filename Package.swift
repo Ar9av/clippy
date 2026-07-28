@@ -8,7 +8,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Clippy", targets: ["ClippyMac"])
+        .executable(name: "Clippy", targets: ["ClippyMac"]),
+        .executable(name: "clippy-eval", targets: ["ClippyEval"])
     ],
     targets: [
         .target(
@@ -28,6 +29,14 @@ let package = Package(
                 .linkedFramework("Speech"),
                 .linkedFramework("Security"),
                 .linkedFramework("ScreenCaptureKit")
+            ]
+        ),
+        .executableTarget(
+            name: "ClippyEval",
+            dependencies: ["ClippyCore"],
+            path: "Sources/ClippyEval",
+            resources: [
+                .copy("Fixtures")
             ]
         ),
         .testTarget(

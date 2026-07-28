@@ -1,0 +1,18 @@
+{
+  "id": "plan-open-app",
+  "suite": "plan",
+  "goal": "open notes for me",
+  "context": "Current app: Safari\nCurrent window: Example\nWindow frame: x 0, y 0, width 1200, height 800\n\nOther open apps (already running — prefer switching to one of these over launching a new instance): Notes\n\nVisible actionable controls (screen coordinates):\n(none relevant)\n",
+  "expect": {
+    "kind": "plan"
+  },
+  "recordedResponse": {
+    "tool": "screen_action",
+    "input": {
+      "summary": "Switch to the already-running Notes app",
+      "steps": [
+        { "action": "open", "app": "Notes" }
+      ]
+    }
+  }
+}

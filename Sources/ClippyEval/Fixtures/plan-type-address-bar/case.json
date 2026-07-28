@@ -1,0 +1,14 @@
+{
+  "id": "plan-type-address-bar",
+  "suite": "plan",
+  "goal": "search for swift concurrency",
+  "context": "Current app: Safari\nCurrent window: New Tab\nWindow frame: x 0, y 0, width 1200, height 800\n\nOther open apps: none\n\nVisible actionable controls (screen coordinates):\n- TextField: \"Address and Search\" at (600, 40)\n",
+  "expect": {
+    "kind": "type",
+    "targetOneOf": ["address"]
+  },
+  "recordedResponse": {
+    "tool": "type_text",
+    "input": { "target": "Address and Search", "text": "swift concurrency" }
+  }
+}

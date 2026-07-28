@@ -1,0 +1,22 @@
+{
+  "id": "plan-click-appearance",
+  "suite": "plan",
+  "goal": "turn on dark mode",
+  "context": "Current app: System Settings\nCurrent window: General\nWindow frame: x 0, y 0, width 900, height 600\n\nOther open apps: none\n\nVisible actionable controls (screen coordinates):\n- Button: \"Appearance\" at (150, 200)\n- Button: \"Dark\" at (150, 260) [disabled]\n- Button: \"Light\" at (150, 260)\n",
+  "expect": {
+    "kind": "plan",
+    "targetOneOf": ["appearance", "dark"],
+    "mustNotTargetContaining": []
+  },
+  "recordedResponse": {
+    "tool": "screen_action",
+    "input": {
+      "summary": "Open Appearance settings and switch to Dark",
+      "steps": [
+        { "action": "click", "target": "Appearance" },
+        { "action": "wait", "seconds": 0.8 },
+        { "action": "click", "target": "Dark" }
+      ]
+    }
+  }
+}

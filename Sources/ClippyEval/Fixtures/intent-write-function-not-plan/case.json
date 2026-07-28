@@ -1,0 +1,13 @@
+{
+  "id": "intent-write-function-not-plan",
+  "suite": "intent",
+  "goal": "write a function to open the file in python and return its contents",
+  "context": "Current app: Clippy\nCurrent window: Chat\nWindow frame: x 0, y 0, width 480, height 680\n\nOther open apps: none\n\nVisible actionable controls (screen coordinates):\n(none relevant)\n",
+  "expect": {
+    "kind": "answer"
+  },
+  "recordedResponse": {
+    "tool": null,
+    "text": "def read_file(path):\n    with open(path) as f:\n        return f.read()"
+  }
+}
