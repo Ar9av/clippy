@@ -2,7 +2,7 @@ import AppKit
 import ClippyCore
 import SwiftUI
 
-private enum CompactPanel {
+private enum CompactPanel: Equatable {
     case home
     case sessions
     case open
@@ -96,6 +96,17 @@ struct ContentView: View {
         }
         .onChange(of: viewModel.speech.isListening) { _, isListening in
             if isListening { draftBeforeDictation = viewModel.draft }
+        }
+        // errorMessage previously stuck around indefinitely once set — the
+        // compact balloon kept showing "I couldn't finish that: …" through
+        // every later panel switch, since nothing but starting a brand new
+        // request/retry/paste ever cleared it. Switching panels is itself a
+        // clear enough signal the user has moved on from that error.
+        .onChange(of: compactPanel) { _, _ in
+            viewModel.errorMessage = nil
+        }
+        .onChange(of: viewModel.isExpanded) { _, _ in
+            viewModel.errorMessage = nil
         }
         .onChange(of: viewModel.speech.transcript) { _, newValue in
             guard viewModel.speech.isListening || !newValue.isEmpty else { return }
