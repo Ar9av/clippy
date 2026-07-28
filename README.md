@@ -3,74 +3,127 @@
 
   # Clippy for macOS
 
-  **He's back. He can see your screen this time.**
+  **A native macOS desktop assistant that can actually see your screen and act on it.**
 
-  A native macOS desktop assistant — chat through your existing Claude Code
-  or Codex login, or your own OpenAI/Anthropic API key — that can look at
-  your screen, click, and type, with a paperclip's face on it.
+  Chat through your existing Claude Code or Codex login, or bring your own
+  OpenAI or Anthropic API key. Ask it to do something on screen and it takes
+  a screenshot, reads the accessibility tree of whatever is in front of you,
+  and acts, instead of just describing the steps back to you.
 
   ![platform](https://img.shields.io/badge/platform-macOS%2014%2B-black?logo=apple)
   ![swift](https://img.shields.io/badge/swift-5.10-F05138?logo=swift&logoColor=white)
   ![universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue)
 </div>
 
-<br>
+## About
 
+Most "AI desktop assistant" demos stop at chat: you ask a question, it
+answers, and you still do the clicking yourself. This project started from
+wanting something that could actually reach into the app in front of me,
+click the right control, type into the right field, and know when to stop
+and ask instead of guessing.
+
+The name and the paperclip are a nod to Microsoft's old Office Assistant.
+Everything else, the screen reasoning, the safety checks, the retry logic,
+is original.
+
+It's a solo side project, developed and rebuilt in public commits as bugs
+turned up from actually using it day to day. Most of the interesting work
+is in getting the automation to fail safely: a step that can't find its
+target should stop and ask, not click something at random.
 
 ## What it actually does
 
 Clippy sits as a small floating character on your desktop. Ask it something
 and it answers in a compact speech balloon, or open the full chat for longer
-conversations, spoken replies, and file attachments — the classic assistant
+conversations, spoken replies, and file attachments: the classic assistant
 experience, minus the 90s bugs.
 
 The part that's new: when you ask it to *do* something on screen, it doesn't
 just describe the steps back to you. It takes a screenshot, reads the
 accessibility tree of whatever's in front of you, and acts:
 
-- **Sees your screen on every request** — a fresh screenshot and an
+- **Sees your screen on every request.** A fresh screenshot and an
   accessibility scan (control labels, roles, positions) go to the model with
   every message, so it can reason about what's actually in front of you
   instead of guessing.
-- **Plans and re-plans, one step at a time** — Clippy doesn't build a
+- **Plans and re-plans, one step at a time.** Clippy doesn't build a
   10-step plan up front and run it blind. It runs one action, takes a new
   screenshot, and asks "given what just happened, what's next?" A screen
-  rarely matches a prediction exactly — this is how Clippy notices.
-- **Retries on its own** — a failed step (wrong label, a menu that opened
+  rarely matches a prediction exactly, and this is how Clippy notices.
+- **Retries on its own.** A failed step (wrong label, a menu that opened
   somewhere else) triggers an automatic retry from a fresh screenshot,
   bounded to a few consecutive attempts before it stops and asks you.
-- **Clicks and types by coordinate when labels can't be trusted** — browser
+- **Clicks and types by coordinate when labels can't be trusted.** Browser
   address bars are the classic case: their accessibility label varies by
   version, and a page can have a look-alike search box with the exact same
   placeholder text sitting right next to the real one. Clippy can click the
   literal pixel it sees in the screenshot instead of gambling on a label
   match.
-- **Aware of what's already open** — before launching a fresh app instance,
+- **Aware of what's already open.** Before launching a fresh app instance,
   it checks what's already running and prefers switching to it.
-- **Shows its work** — every plan runs through a live checklist (✓ done,
+- **Shows its work.** Every plan runs through a live checklist (✓ done,
   ✗ failed, • pending) and, once it finishes, gets posted to the chat
   transcript as a permanent record of what actually happened.
+
+## Project structure
+
+```
+Sources/
+  ClippyCore/                    Shared library: providers, prompts, safety. No UI, no AppKit.
+    AIService.swift              Provider-agnostic prompt building and response marker parsing.
+    AnthropicClient.swift        Real Anthropic tool-use client with streaming.
+    Models.swift                 ChatMessage, ScreenPlanStep, PendingScreenPlan, and friends.
+    ScreenPlanRunner.swift       Runs a validated plan step by step against ScreenStepPerforming.
+    ScreenAgent.swift            Observe, act, verify loop for tool-use screen intent.
+    AIProviding.swift            AIProviding protocol plus the CLI-backed and API-backed providers.
+    ClippyTools.swift            Tool-use schema definitions for model-driven screen actions.
+    ScreenTypes.swift            ScreenContext, ScreenElementSummary, and screenshot metadata.
+    AutomationSafety.swift       Final-action refusal list: send, submit, pay, delete, and so on.
+    CoordinateSpace.swift        Shared math for correcting model-supplied screen points.
+    KeychainStore.swift          API key storage.
+    SystemPrompt.swift           Shared system prompt text.
+
+  ClippyMac/                     The app: SwiftUI, AppKit, macOS Accessibility.
+    ContentView.swift            The floating balloon, expanded chat window, and Settings.
+    ScreenAwarenessService.swift Accessibility-tree scanning, clicking, and typing.
+    ChatViewModel.swift          Central state machine driving every request and screen action.
+    ScreenTypingService.swift    Live-tracks the last focused editable field for direct insertion.
+    LocalActionService.swift     Discovers local Claude Code and Codex sessions to resume.
+    ClippyMacApp.swift           App entry point, window configuration, permissions bootstrap.
+    ChatStore.swift              Conversation, history, and pending-plan persistence.
+    SpeechService.swift          Dictation and spoken replies.
+    OnboardingView.swift         First-run permissions primer.
+    PermissionsModel.swift       Live Accessibility and Screen Recording permission state.
+    ClippySpriteView.swift       Sprite-sheet animation and the floating character's on-screen look.
+
+  ClippyEval/                    Offline regression harness for the tool-use screen-intent path.
+
+Tests/ClippyMacTests/            Unit tests: plan running, tool-use parsing, safety, persistence.
+scripts/build-dmg.sh             Universal-binary build, code signing, and DMG packaging.
+```
 
 ## Guardrails
 
 - Every step is validated before it runs: **Send, Submit, publish, buy, pay,
-  delete, accept/agree, sign out, and password/passcode controls are always
-  refused** — this check is unconditional and independent of everything
-  else below.
+  delete, accept or agree, sign out, and password or passcode controls are
+  always refused.** This check is unconditional and independent of
+  everything else below.
 - Return is never sent by Clippy, with exactly one exception: submitting a
-  browser's own address/search field (navigating to a URL or running a
-  search). Every other field gets typed into but never submitted — you
-  press Enter yourself.
-- Secure/password fields are refused outright, regardless of what's asked.
-- By default, this build's terminal/agent-CLI blocklist
-  (`AutomationSafety.swift`) is **empty** — Clippy can click and type into
+  browser's own address or search field (navigating to a URL or running a
+  search). Every other field gets typed into but never submitted; you press
+  Enter yourself.
+- Secure and password fields are refused outright, regardless of what's
+  asked.
+- By default, this build's terminal and agent-CLI blocklist
+  (`AutomationSafety.swift`) is **empty**: Clippy can click and type into
   Terminal, Warp, iTerm, and similar apps, on the reasoning that everything
   runs on your own machine and Return still can't be sent there. If you want
-  that restricted again, add bundle identifiers / name fragments back to
-  `blockedBundleIdentifiers` / `blockedNameFragments`.
+  that restricted again, add bundle identifiers or name fragments back to
+  `blockedBundleIdentifiers` and `blockedNameFragments`.
 - Nothing runs without both **Accessibility** and **Screen & System Audio
-  Recording** permission granted in System Settings — Clippy prompts for
-  both the first time it needs them.
+  Recording** permission granted in System Settings. Clippy prompts for both
+  the first time it needs them.
 
 ## Build the DMG
 
@@ -83,10 +136,6 @@ chmod +x scripts/build-dmg.sh
 
 The output is written to `build/Clippy-macOS-universal.dmg`. The included app
 runs natively on both Apple Silicon and Intel Macs.
-
-All sprite, animation, and icon assets required by the packaging script are
-included in `Resources`, so the repository builds independently of the
-portfolio project it originated in.
 
 Local builds automatically use the first Apple Development code-signing
 identity in the current keychain. This keeps macOS Accessibility permission
@@ -119,7 +168,7 @@ Homebrew, npm, and user-local install locations and runs `claude -p`.
 ### Codex
 
 Install Codex and authenticate once in Terminal. Clippy runs `codex exec` with
-network/file mutation disabled by the `read-only` sandbox.
+network and file mutation disabled by the `read-only` sandbox.
 
 ### APIs
 
@@ -136,6 +185,11 @@ user's macOS Keychain.
 - Local Codex and Claude session discovery with explicit resume-in-Terminal actions
 - Contextual answer actions for copying results and opening cited links
 - True request cancellation for API calls and local Claude Code/Codex processes
-- Compact-balloon attachments for images, PDFs, and text/code files — paste images or file URLs directly with Command-V
+- Compact-balloon attachments for images, PDFs, and text/code files: paste images or file URLs directly with Command-V
 - Persistent conversation history
 - Optional always-on-top window
+
+## Contributing
+
+PRs welcome. If you're using Claude Code or a similar agent, it can read this
+whole codebase in one pass; just point it at what you want changed.
