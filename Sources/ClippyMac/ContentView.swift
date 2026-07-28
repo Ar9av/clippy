@@ -962,28 +962,30 @@ struct ContentView: View {
                 .help(viewModel.speech.isListening ? "Stop dictation" : "Dictate")
 
                 Button {
-                    if viewModel.isLoading {
+                    if viewModel.isLoading || viewModel.isRunningScreenPlan {
                         viewModel.cancelRequest()
                     } else {
                         viewModel.send()
                     }
                 } label: {
-                    Image(systemName: viewModel.isLoading ? "stop.circle.fill" : "arrow.up.circle.fill")
+                    Image(systemName: (viewModel.isLoading || viewModel.isRunningScreenPlan) ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 29))
                 }
                 .buttonStyle(.plain)
                 .disabled(
                     (viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                      && viewModel.pendingAttachments.isEmpty)
-                    && !viewModel.isLoading
+                    && !viewModel.isLoading && !viewModel.isRunningScreenPlan
                 )
-                .help(viewModel.isLoading ? "Stop generating" : "Send")
+                .help((viewModel.isLoading || viewModel.isRunningScreenPlan) ? "Stop generating" : "Send")
                 .keyboardShortcut(.return, modifiers: [])
             }
 
             HStack {
                 Text(viewModel.isLoading
                      ? "\(viewModel.provider.shortTitle) is working · \(elapsedText)"
+                     : viewModel.isRunningScreenPlan
+                     ? "Running a screen plan…"
                      : (viewModel.providerReady ? "Connected via \(viewModel.provider.title)" : "Setup needed for \(viewModel.provider.title)"))
                     .foregroundStyle(viewModel.providerReady ? Color.secondary : Color.orange)
                 Spacer()
@@ -1429,6 +1431,10 @@ struct SettingsView: View {
                     Toggle("Keep Clippy above other windows", isOn: $viewModel.alwaysOnTop)
                     Toggle("Animate Clippy", isOn: $viewModel.animateClippy)
                     Text("Off keeps the paperclip still and reduces visual motion.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Always run screen plans without confirming", isOn: $viewModel.alwaysAutoRunScreenPlans)
+                    Text("Off (recommended) waits for you to tap Run plan on anything beyond a single app switch or address-bar navigation.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

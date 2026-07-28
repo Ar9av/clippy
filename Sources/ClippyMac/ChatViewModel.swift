@@ -47,6 +47,14 @@ final class ChatViewModel: ObservableObject {
     @Published var animateClippy: Bool {
         didSet { UserDefaults.standard.set(animateClippy, forKey: "animateClippy") }
     }
+    /// Off by default: a multi-step plan waits for the user to tap "Run
+    /// plan" in the banner (or reply with an affirmative) instead of running
+    /// unattended the moment it's parsed. A single-step open/navigate is
+    /// always auto-run regardless of this setting — there's nothing to
+    /// meaningfully review before switching to an app or loading a URL.
+    @Published var alwaysAutoRunScreenPlans: Bool {
+        didSet { UserDefaults.standard.set(alwaysAutoRunScreenPlans, forKey: "alwaysAutoRunScreenPlans") }
+    }
 
     let speech = SpeechService()
     private var currentRequestTask: Task<Void, Never>?
@@ -70,6 +78,7 @@ final class ChatViewModel: ObservableObject {
         alwaysOnTop = UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? false
         // The sprite sheet is charming, but a resting paperclip is smoother by default.
         animateClippy = UserDefaults.standard.object(forKey: "animateClippy") as? Bool ?? false
+        alwaysAutoRunScreenPlans = UserDefaults.standard.object(forKey: "alwaysAutoRunScreenPlans") as? Bool ?? false
         ScreenTypingService.shared.startTracking()
         ScreenAwarenessService.shared.startTracking()
         refreshSessions()
@@ -100,8 +109,13 @@ final class ChatViewModel: ObservableObject {
 
     func send(_ suggestedText: String? = nil) {
         var text = (suggestedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (!text.isEmpty || !pendingAttachments.isEmpty), !isLoading else { return }
-        if let plan = pendingScreenPlan, !isRunningScreenPlan {
+        // A running plan holds currentRequestTask just like a chat request
+        // does — without also checking isRunningScreenPlan here, a message
+        // typed while a plan is mid-flight would start a second request that
+        // overwrites currentRequestTask, orphaning the running plan so
+        // neither cancelRequest() nor cancelPendingScreenPlan() can stop it.
+        guard (!text.isEmpty || !pendingAttachments.isEmpty), !isLoading, !isRunningScreenPlan else { return }
+        if let plan = pendingScreenPlan {
             let isStale = Date().timeIntervalSince(plan.createdAt) > Self.pendingPlanConfirmationWindow
             if Self.isAffirmativeConfirmation(text), !plan.hasExecuted, !isStale {
                 draft = ""
@@ -168,14 +182,22 @@ final class ChatViewModel: ObservableObject {
     /// most: right after a plan failed. Re-submits the same text as a fresh
     /// message rather than replaying stale history.
     func retryLastRequest() {
-        guard !isLoading, let text = lastUserRequestText else { return }
+        guard !isLoading, !isRunningScreenPlan, let text = lastUserRequestText else { return }
         errorMessage = nil
         speech.stopSpeaking()
         submitUserMessage(text: text, attachments: lastRequestAttachments, requestsScreenPlan: lastRequestUsesScreenPlan)
     }
 
+    /// Also cancels a running screen plan, not just an ordinary chat
+    /// request — previously guarded on `isLoading` alone, which is already
+    /// false by the time a plan is executing (see `startRequest`), making
+    /// this a silent no-op for the entire duration of any plan.
     func cancelRequest() {
-        guard isLoading else { return }
+        guard isLoading || isRunningScreenPlan else { return }
+        if isRunningScreenPlan {
+            cancelPendingScreenPlan()
+            return
+        }
         currentRequestTask?.cancel()
         currentRequestTask = nil
         activityTask?.cancel()
@@ -397,7 +419,7 @@ final class ChatViewModel: ObservableObject {
                 } else if let parsedScreenPlan {
                     activityTask?.cancel()
                     isLoading = false
-                    await autoRunScreenPlan(parsedScreenPlan.plan)
+                    await presentOrAutoRun(parsedScreenPlan.plan)
                 } else {
                     finishActivity()
                 }
@@ -638,6 +660,40 @@ final class ChatViewModel: ObservableObject {
     func autoRunScreenPlan(_ plan: PendingScreenPlan) async {
         guard !isRunningScreenPlan else { return }
         await executeScreenPlan(plan)
+    }
+
+    /// A single `open` (switch app) or a single address/search-bar navigate
+    /// has nothing meaningful to review before running — the earlier
+    /// "I couldn't map a destination" branches already cover the case where
+    /// there's no safe target at all. Anything else (multi-step, or any
+    /// step that clicks/types into the current app) waits for the user to
+    /// tap "Run plan" in the banner, unless they've opted into always
+    /// auto-running via Settings.
+    private static func qualifiesForAutoRun(_ plan: PendingScreenPlan) -> Bool {
+        guard plan.steps.count == 1, let step = plan.steps.first else { return false }
+        switch step.action {
+        case .open:
+            return true
+        case .type:
+            return step.pressReturnAfter == true
+        case .click, .wait, .key:
+            return false
+        }
+    }
+
+    /// Decides whether a freshly parsed plan runs immediately or waits for
+    /// explicit confirmation — the system prompt tells the model the app
+    /// "will show the complete plan and require confirmation before running
+    /// it," but until this every plan auto-ran regardless of size or risk.
+    private func presentOrAutoRun(_ plan: PendingScreenPlan) async {
+        if alwaysAutoRunScreenPlans || Self.qualifiesForAutoRun(plan) {
+            await autoRunScreenPlan(plan)
+            return
+        }
+        pendingScreenPlan = plan
+        screenPlanStatuses = plan.steps.map { _ in .pending }
+        screenStatus = "Ready to run \(plan.steps.count) step\(plan.steps.count == 1 ? "" : "s") — tap Run plan to confirm."
+        finishActivity(message: "I've got a plan ready — tap Run plan when you want me to go ahead.")
     }
 
     /// Runs one step, then re-observes the screen and asks the model to
