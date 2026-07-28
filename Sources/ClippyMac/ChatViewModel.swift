@@ -9,6 +9,7 @@ final class ChatViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showSettings = false
+    @Published var showOnboarding: Bool
     @Published var isExpanded = false
     @Published var pendingAttachments: [URL] = []
     @Published private(set) var activityMessage = ""
@@ -80,6 +81,7 @@ final class ChatViewModel: ObservableObject {
         // The sprite sheet is charming, but a resting paperclip is smoother by default.
         animateClippy = UserDefaults.standard.object(forKey: "animateClippy") as? Bool ?? false
         alwaysAutoRunScreenPlans = UserDefaults.standard.object(forKey: "alwaysAutoRunScreenPlans") as? Bool ?? false
+        showOnboarding = !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         ScreenTypingService.shared.startTracking()
         ScreenAwarenessService.shared.startTracking()
         refreshSessions()
@@ -1018,6 +1020,11 @@ final class ChatViewModel: ObservableObject {
         isRunningScreenPlan = false
         screenStatus = nil
         ScreenAwarenessService.shared.dismissHighlight()
+    }
+
+    func finishOnboarding() {
+        showOnboarding = false
+        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
     }
 
     func addAttachments(_ urls: [URL]) {

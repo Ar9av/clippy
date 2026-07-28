@@ -90,6 +90,12 @@ struct ContentView: View {
             SettingsView()
                 .environmentObject(viewModel)
         }
+        .sheet(isPresented: $viewModel.showOnboarding) {
+            OnboardingView(permissions: viewModel.permissions) {
+                viewModel.finishOnboarding()
+            }
+            .environmentObject(viewModel)
+        }
         .sheet(isPresented: $showHistory) {
             ChatHistoryView()
                 .environmentObject(viewModel)
