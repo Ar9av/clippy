@@ -279,6 +279,9 @@ final class ScreenAwarenessService {
         guard resolved.summary.enabled else {
             throw ScreenAwarenessError.targetUnavailable
         }
+        guard !AutomationSafety.isFinalAction(resolved.summary.label) else {
+            throw ScreenAwarenessError.unsafeAction(resolved.summary.label)
+        }
         let result = AXUIElementPerformAction(
             resolved.element,
             kAXPressAction as CFString
@@ -309,7 +312,7 @@ final class ScreenAwarenessService {
     }
 
     func runClick(matching query: String) async throws {
-        guard !Self.isUnsafeFinalAction(query) else {
+        guard !AutomationSafety.isFinalAction(query) else {
             throw ScreenAwarenessError.unsafeAction(query)
         }
         try await waitForTarget(query)
@@ -353,6 +356,19 @@ final class ScreenAwarenessService {
         // resolve and capture the element actually at this point before
         // acting on it — that capture is dispatched asynchronously.
         try await Task.sleep(for: .milliseconds(220))
+        // The click was posted at a model-supplied coordinate with no
+        // confirmation it actually landed on an editable field — if the
+        // coordinate space was off, the click could have hit anything.
+        // Verify an editable, non-secure element was really captured before
+        // ever touching its contents; a miss throws instead of blindly
+        // clearing whatever happens to be frontmost.
+        do {
+            try ScreenTypingService.shared.verifiedNonSecureTarget()
+        } catch ScreenTypingError.secureField {
+            throw ScreenAwarenessError.unsafeAction(label)
+        } catch {
+            throw ScreenAwarenessError.notEditable(label)
+        }
         // ScreenTypingService.insert replaces the current selection (or
         // inserts at the cursor if nothing's selected) — it never clears the
         // field itself. A real click on a browser's address bar auto-selects
@@ -372,7 +388,7 @@ final class ScreenAwarenessService {
     /// tap (indistinguishable from a real click to any global event monitor,
     /// which is what lets `ScreenTypingService` pick it up).
     private func guardedRawClick(at point: CGPoint, label: String, highlightLabel: String) async throws {
-        guard !Self.isUnsafeFinalAction(label) else {
+        guard !AutomationSafety.isFinalAction(label) else {
             throw ScreenAwarenessError.unsafeAction(label)
         }
         // This bypasses `refreshSpatialMap`'s label resolution entirely, so
@@ -539,8 +555,7 @@ final class ScreenAwarenessService {
         let resolved = try resolve(query, preferEditable: true)
         let role = stringAttribute(kAXRoleAttribute, from: resolved.element) ?? ""
         let subrole = stringAttribute(kAXSubroleAttribute, from: resolved.element) ?? ""
-        guard subrole != kAXSecureTextFieldSubrole as String,
-              role != kAXSecureTextFieldSubrole as String else {
+        guard !AutomationSafety.isSecureField(role: role, subrole: subrole) else {
             throw ScreenAwarenessError.unsafeAction(query)
         }
         let editableRoles = [
@@ -998,15 +1013,6 @@ final class ScreenAwarenessService {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success
             && settable.boolValue
-    }
-
-    private static func isUnsafeFinalAction(_ label: String) -> Bool {
-        let normalized = label.lowercased()
-        let blocked = [
-            "send", "submit", "publish", "post", "buy", "purchase", "pay",
-            "delete", "remove", "accept", "agree", "place order", "transfer"
-        ]
-        return blocked.contains { normalized.contains($0) }
     }
 
     private static func isEditableRole(_ role: String) -> Bool {

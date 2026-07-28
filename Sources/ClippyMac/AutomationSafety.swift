@@ -39,27 +39,72 @@ enum AutomationSafety {
     ]
 
     static func isFinalAction(_ label: String) -> Bool {
-        let normalized = label.lowercased()
-        return finalActionFragments.contains { normalized.contains($0) }
+        containsWord(label, in: finalActionFragments)
     }
 
+    /// Splits `text` on anything that isn't a letter/digit and checks whether
+    /// any resulting word (or, for multi-word fragments like "place order",
+    /// the raw substring) matches a fragment. This is deliberately stricter
+    /// than a bare `contains`: "sender name" and "repost" must not match
+    /// "send"/"post", while "Send message" and "Buy now" still must.
+    private static func containsWord(_ text: String, in fragments: [String]) -> Bool {
+        let normalized = text.lowercased()
+        let words = Set(normalized.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        for fragment in fragments {
+            if fragment.contains(" ") {
+                if normalized.contains(fragment) { return true }
+            } else if words.contains(fragment) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Fields whose contents must never be read back, retyped, or auto-typed
+    /// into: passwords, passcodes, and anything the OS itself marks as a
+    /// secure text field. Kept alongside the label-based checks so the
+    /// AX-role-based check (`ScreenAwarenessService.put`) and any future
+    /// label-only callers share the same judgment about what counts as secure.
+    static func isSecureField(role: String, subrole: String) -> Bool {
+        role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    }
+
+    /// Fragments that indicate a field belongs to a real browser location/search
+    /// bar, never a form field that merely happens to be labelled "address".
     private static let addressFieldFragments = [
-        "address", "url", "location bar", "omnibox", "search bar", "search or type"
+        "address and search", "address or search", "location bar", "omnibox",
+        "search or type", "search bar"
+    ]
+
+    private static let addressFieldExactFragments: Set<String> = ["url", "address bar"]
+
+    /// Labels that mean a field belongs to a form (shipping, billing, contact,
+    /// account) rather than a browser chrome control, even though the word
+    /// "address" appears in both. Checked first and unconditionally disqualifies
+    /// a target, so a browser-chrome match can never be masked by these.
+    private static let formFieldFragments = [
+        "email", "billing", "shipping", "street", "mailing", "home address",
+        "form", "contact", "recipient"
     ]
 
     /// The one narrow exception to "Clippy never sends the Return key":
     /// submitting a browser's own address/search field, whether that's a URL
     /// (navigate) or plain text (search with the default engine). Either way
     /// it's the browser's own "go" action — never a form submission, a
-    /// purchase, or anything else `isFinalAction` guards against. Only the
-    /// destination field has to look the part; any single-line, non-empty
-    /// text qualifies, since there's no bare-URL-vs-search-query distinction
-    /// worth gatekeeping when the field itself is what's actually safe here.
-    /// A step that doesn't satisfy this must fall back to leaving the text
-    /// typed and letting the user press Return themselves.
+    /// purchase, or anything else `isFinalAction` guards against. The
+    /// destination field must specifically look like browser chrome — bare
+    /// "address" is not enough, since "Email address"/"Billing address" form
+    /// fields also contain that word. A step that doesn't satisfy this must
+    /// fall back to leaving the text typed and letting the user press Return
+    /// themselves.
     static func isSafeAddressBarSubmit(target: String, text: String) -> Bool {
         let normalizedTarget = target.lowercased()
-        guard addressFieldFragments.contains(where: normalizedTarget.contains) else {
+        guard !formFieldFragments.contains(where: normalizedTarget.contains) else {
+            return false
+        }
+        let matchesChrome = addressFieldFragments.contains(where: normalizedTarget.contains)
+            || containsWord(normalizedTarget, in: Array(addressFieldExactFragments))
+        guard matchesChrome else {
             return false
         }
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)

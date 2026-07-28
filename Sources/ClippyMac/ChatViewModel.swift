@@ -318,6 +318,12 @@ final class ChatViewModel: ObservableObject {
                             matching: screenDirective.target,
                             instruction: preparedResponse
                         )
+                        guard !AutomationSafety.isFinalAction(target) else {
+                            ScreenAwarenessService.shared.dismissHighlight()
+                            screenStatus = "I won't click \"\(target)\" — that looks like a final action, so I'll leave it for you to click."
+                            finishActivity(message: screenStatus ?? "I won't click that for you.")
+                            return
+                        }
                         pendingScreenAction = PendingScreenAction(
                             label: target,
                             detail: preparedResponse.isEmpty

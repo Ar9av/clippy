@@ -113,6 +113,21 @@ final class ScreenTypingService {
         }
     }
 
+    /// Confirms the target the global mouse-down monitor just captured is
+    /// present, editable, and not secure — the same guard `insert()` applies
+    /// before writing. Called before a coordinate-driven `clearField()` so
+    /// that a Cmd+A/Delete never fires blind against whatever happened to be
+    /// frontmost when a synthetic click misses its intended target.
+    func verifiedNonSecureTarget() throws {
+        try prepareForInsertion()
+        guard let target else { throw ScreenTypingError.noEditableTarget }
+        let role = stringAttribute(kAXRoleAttribute, from: target.element) ?? ""
+        let subrole = stringAttribute(kAXSubroleAttribute, from: target.element) ?? ""
+        guard !AutomationSafety.isSecureField(role: role, subrole: subrole) else {
+            throw ScreenTypingError.secureField
+        }
+    }
+
     @discardableResult
     func insert(_ text: String) async throws -> String {
         try prepareForInsertion()
@@ -120,8 +135,7 @@ final class ScreenTypingService {
 
         let role = stringAttribute(kAXRoleAttribute, from: target.element) ?? ""
         let subrole = stringAttribute(kAXSubroleAttribute, from: target.element) ?? ""
-        guard role != kAXSecureTextFieldSubrole as String,
-              subrole != kAXSecureTextFieldSubrole as String else {
+        guard !AutomationSafety.isSecureField(role: role, subrole: subrole) else {
             throw ScreenTypingError.secureField
         }
 
