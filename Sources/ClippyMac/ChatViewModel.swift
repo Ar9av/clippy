@@ -57,6 +57,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     let speech = SpeechService()
+    let permissions = PermissionsModel()
     private var currentRequestTask: Task<Void, Never>?
     private var activityTask: Task<Void, Never>?
     private var completionTask: Task<Void, Never>?
@@ -238,6 +239,14 @@ final class ChatViewModel: ObservableObject {
         // it answering blind. The presentation-specific flags below still
         // shape formatting strictness once we know context is available.
         let shouldInspectScreen = ScreenAwarenessService.shared.canSeeScreen
+        // Without Screen Recording, every request previously still went out
+        // with screen-action instructions in the prompt while no screenshot
+        // was ever attached — the model had no way to know why, and the user
+        // saw no indication their screen simply wasn't visible. Say so once,
+        // up front, whenever the request actually wanted a screen action.
+        if !shouldInspectScreen, shouldWriteToScreen || shouldBuildScreenPlan || shouldDraftScreenReply {
+            screenStatus = "I can't see your screen — grant Screen Recording in Settings, or I'll just answer in words."
+        }
         let presentation: ResponsePresentation
         if shouldWriteToScreen {
             presentation = .screenInsert
@@ -1054,8 +1063,16 @@ final class ChatViewModel: ObservableObject {
         pendingAttachments.removeAll { $0 == url }
     }
 
+    /// Recursively enumerates `~/.codex/sessions` and `~/.claude/projects`
+    /// and reads a chunk of each session file — potentially dozens of files
+    /// for a heavy CLI user. Runs off the main actor so a cold launch (this
+    /// is called from `init()`) doesn't stall the UI on disk I/O before the
+    /// window ever appears.
     func refreshSessions() {
-        recentSessions = LocalActionService.recentSessions()
+        Task.detached(priority: .utility) {
+            let sessions = LocalActionService.recentSessions()
+            await MainActor.run { self.recentSessions = sessions }
+        }
     }
 
     func resume(_ session: CodingSession) {
