@@ -74,6 +74,13 @@ final class ClippyAnimationController: ObservableObject {
         play(newMood)
     }
 
+    /// Decoding the 213 KB animation JSON and the 1.3 MB sprite sheet is
+    /// identical work for every instance — `ClippyPortrait` alone creates
+    /// one `ClippyAnimationController` per message bubble, so a 40-message
+    /// transcript used to repeat this decode 20+ times. Cached once per
+    /// process instead.
+    private static var cachedAssets: (data: AgentAnimationData, sheet: CGImage)?
+
     /// The packaged .app (built via scripts/build-dmg.sh) copies these files
     /// directly into Contents/Resources, so `Bundle.main` finds them there.
     /// A plain `swift build`/`swift run` has no .app bundle at all — for
@@ -81,17 +88,27 @@ final class ClippyAnimationController: ObservableObject {
     /// (`Bundle.module`), so fall back to it rather than silently rendering
     /// no sprite.
     private func loadAssets() {
-        guard
-            let jsonURL = Bundle.main.url(forResource: "ClippyAnimations", withExtension: "json")
-                ?? Bundle.module.url(forResource: "ClippyAnimations", withExtension: "json"),
-            let spriteURL = Bundle.main.url(forResource: "ClippySprites", withExtension: "png")
-                ?? Bundle.module.url(forResource: "ClippySprites", withExtension: "png"),
-            let json = try? Data(contentsOf: jsonURL),
-            let decoded = try? JSONDecoder().decode(AgentAnimationData.self, from: json),
-            let source = CGImageSourceCreateWithURL(spriteURL as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else {
-            return
+        let decoded: AgentAnimationData
+        let image: CGImage
+        if let cached = Self.cachedAssets {
+            decoded = cached.data
+            image = cached.sheet
+        } else {
+            guard
+                let jsonURL = Bundle.main.url(forResource: "ClippyAnimations", withExtension: "json")
+                    ?? Bundle.module.url(forResource: "ClippyAnimations", withExtension: "json"),
+                let spriteURL = Bundle.main.url(forResource: "ClippySprites", withExtension: "png")
+                    ?? Bundle.module.url(forResource: "ClippySprites", withExtension: "png"),
+                let json = try? Data(contentsOf: jsonURL),
+                let loadedData = try? JSONDecoder().decode(AgentAnimationData.self, from: json),
+                let source = CGImageSourceCreateWithURL(spriteURL as CFURL, nil),
+                let loadedImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            else {
+                return
+            }
+            decoded = loadedData
+            image = loadedImage
+            Self.cachedAssets = (decoded, image)
         }
 
         data = decoded
@@ -118,6 +135,13 @@ final class ClippyAnimationController: ObservableObject {
                     self.render(frame)
                     let milliseconds = max(frame.duration, 16)
                     try? await Task.sleep(for: .milliseconds(milliseconds))
+                }
+                // An animation with no frames (malformed data, or a mood
+                // whose every candidate name is missing from the JSON) would
+                // otherwise loop this outer `while` with no sleep at all —
+                // a tight busy-spin pinning a core with nothing to show for it.
+                if animation.value.frames.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(200))
                 }
 
                 if let returnTo {

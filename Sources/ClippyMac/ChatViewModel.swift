@@ -83,6 +83,7 @@ final class ChatViewModel: ObservableObject {
         ScreenTypingService.shared.startTracking()
         ScreenAwarenessService.shared.startTracking()
         refreshSessions()
+        Task.detached(priority: .background) { CacheJanitor.clean() }
         loadMessages()
         loadChatHistory()
         if messages.isEmpty {
@@ -1172,31 +1173,21 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func persistMessages() {
-        if let data = try? JSONEncoder().encode(Array(messages.suffix(100))) {
-            UserDefaults.standard.set(data, forKey: "messages")
-        }
+        ChatStore.saveMessages(messages)
     }
 
     private func loadMessages() {
-        guard let data = UserDefaults.standard.data(forKey: "messages"),
-              let decoded = try? JSONDecoder().decode([ChatMessage].self, from: data) else {
-            return
-        }
+        let decoded = ChatStore.loadMessages()
+        guard !decoded.isEmpty else { return }
         messages = decoded
     }
 
     private func persistChatHistory() {
-        if let data = try? JSONEncoder().encode(chatHistory) {
-            UserDefaults.standard.set(data, forKey: "chatHistory")
-        }
+        ChatStore.saveHistory(chatHistory)
     }
 
     private func loadChatHistory() {
-        guard let data = UserDefaults.standard.data(forKey: "chatHistory"),
-              let decoded = try? JSONDecoder().decode([ArchivedChatSession].self, from: data) else {
-            return
-        }
-        chatHistory = decoded
+        chatHistory = ChatStore.loadHistory()
     }
 }
 

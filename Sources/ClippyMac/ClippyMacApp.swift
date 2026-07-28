@@ -50,6 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureWindows(expanded: Bool? = nil) {
         let floating = UserDefaults.standard.bool(forKey: "alwaysOnTop")
         for window in NSApplication.shared.windows {
+            // Settings/History present as `.sheet(isPresented:)`, which are
+            // real NSWindows in `NSApplication.shared.windows` — without this
+            // guard they got the same transparent-background, no-shadow,
+            // hidden-titlebar-buttons, forced-floating-level, forced-resize
+            // treatment as the main balloon/chat window, which is why the
+            // Settings sheet used to render with broken chrome.
+            guard !window.isSheet else { continue }
             window.backgroundColor = .clear
             window.isOpaque = false
             window.hasShadow = false
