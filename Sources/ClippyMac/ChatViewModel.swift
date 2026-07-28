@@ -53,6 +53,11 @@ final class ChatViewModel: ObservableObject {
     private var completionTask: Task<Void, Never>?
     private var lastRequestAttachments: [URL] = []
     private var lastRequestUsesScreenPlan = false
+    private var lastUserRequestText: String?
+    /// How long a plan waiting for confirmation stays valid — after this, an
+    /// affirmative message is treated as unrelated rather than silently
+    /// re-triggering a plan the user may have forgotten about.
+    private static let pendingPlanConfirmationWindow: TimeInterval = 120
 
     init() {
         let rawProvider = UserDefaults.standard.string(forKey: "provider") ?? ""
@@ -95,10 +100,18 @@ final class ChatViewModel: ObservableObject {
     func send(_ suggestedText: String? = nil) {
         var text = (suggestedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !pendingAttachments.isEmpty), !isLoading else { return }
-        if pendingScreenPlan != nil, !isRunningScreenPlan, Self.isAffirmativeConfirmation(text) {
-            draft = ""
-            runPendingScreenPlan()
-            return
+        if let plan = pendingScreenPlan, !isRunningScreenPlan {
+            let isStale = Date().timeIntervalSince(plan.createdAt) > Self.pendingPlanConfirmationWindow
+            if Self.isAffirmativeConfirmation(text), !plan.hasExecuted, !isStale {
+                draft = ""
+                runPendingScreenPlan()
+                return
+            }
+            // Either this message isn't a confirmation, or the plan it would
+            // confirm has already run or gone stale — either way it must not
+            // sit around to be re-triggered by some later unrelated "ok".
+            pendingScreenPlan = nil
+            screenPlanStatuses = []
         }
         if text.isEmpty {
             text = "Please look at the attached file and tell me what you notice."
@@ -121,28 +134,43 @@ final class ChatViewModel: ObservableObject {
         errorMessage = nil
         speech.stopSpeaking()
         let attachments = pendingAttachments
+        pendingAttachments = []
+        submitUserMessage(text: text, attachments: attachments, requestsScreenPlan: requestsScreenPlan)
+    }
+
+    /// Appends the user's message to the transcript and starts the request —
+    /// shared by `send()` and `retryLastRequest()` so a retry always resends
+    /// through the exact same path a fresh message would, rather than
+    /// replaying `startRequest` against whatever now happens to be at the
+    /// end of `messages`.
+    private func submitUserMessage(text: String, attachments: [URL], requestsScreenPlan: Bool) {
         let attachmentLabel = attachments.isEmpty
             ? ""
             : "\n\nAttached: " + attachments.map(\.lastPathComponent).joined(separator: ", ")
         messages.append(ChatMessage(role: .user, content: text + attachmentLabel))
-        pendingAttachments = []
         persistMessages()
         lastRequestAttachments = attachments
         lastRequestUsesScreenPlan = requestsScreenPlan
+        lastUserRequestText = text
         startRequest(
             attachments: attachments,
             forceScreenPlan: requestsScreenPlan
         )
     }
 
+    /// Retries the last message the user actually sent, tracked explicitly
+    /// rather than inferred from `messages.last?.role`. A screen plan posts
+    /// its own assistant-authored step history to the transcript on
+    /// completion or failure (`postStepHistory`), so after any plan the last
+    /// message is never the user's — the old `messages.last?.role == .user`
+    /// guard made "Try again" a silent no-op in exactly the case it matters
+    /// most: right after a plan failed. Re-submits the same text as a fresh
+    /// message rather than replaying stale history.
     func retryLastRequest() {
-        guard !isLoading, messages.last?.role == .user else { return }
+        guard !isLoading, let text = lastUserRequestText else { return }
         errorMessage = nil
         speech.stopSpeaking()
-        startRequest(
-            attachments: lastRequestAttachments,
-            forceScreenPlan: lastRequestUsesScreenPlan
-        )
+        submitUserMessage(text: text, attachments: lastRequestAttachments, requestsScreenPlan: lastRequestUsesScreenPlan)
     }
 
     func cancelRequest() {
@@ -591,7 +619,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func runPendingScreenPlan() {
-        guard let plan = pendingScreenPlan, !isRunningScreenPlan else { return }
+        guard let plan = pendingScreenPlan, !isRunningScreenPlan, !plan.hasExecuted else { return }
         currentRequestTask = Task {
             await executeScreenPlan(plan)
             currentRequestTask = nil
@@ -705,6 +733,7 @@ final class ChatViewModel: ObservableObject {
                 announce("Clippy stopped after retrying \(consecutiveFailures) times. \(lastFailureReason ?? "")")
                 finishActivity(message: "I tried a few approaches and got stuck — check the step I flagged.")
                 postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stuck after repeated failures")
+                pendingScreenPlan?.hasExecuted = true
                 isRunningScreenPlan = false
                 return
             }
@@ -743,6 +772,11 @@ final class ChatViewModel: ObservableObject {
         }
 
         ScreenAwarenessService.shared.dismissHighlight()
+        // Whatever a plan is left visible for below (stopped, stalled,
+        // errored, or gave up), it has already run and must never be
+        // re-triggered by "Run plan" or a later affirmative message — the
+        // success branches null pendingScreenPlan out entirely anyway.
+        pendingScreenPlan?.hasExecuted = true
         if stoppedEarly {
             screenStatus = "Plan stopped."
         } else if let loopError {

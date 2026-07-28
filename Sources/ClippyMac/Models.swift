@@ -235,6 +235,16 @@ struct PendingScreenPlan: Identifiable, Codable, Equatable {
     let id = UUID()
     let summary: String
     let steps: [ScreenPlanStep]
+    /// When this plan was created — never decoded from a model response
+    /// (the JSON never includes it); used to refuse confirming a plan that's
+    /// sat around too long, rather than letting an old banner get triggered
+    /// by an unrelated later "ok".
+    var createdAt: Date = Date()
+    /// Set once the plan has actually been run to completion, failure, or a
+    /// stall. A plan that finished (in any of those ways) is kept visible so
+    /// the user can see what happened, but must never be re-run — neither by
+    /// the banner's "Run plan" button nor by a later affirmative message.
+    var hasExecuted = false
 
     init(summary: String, steps: [ScreenPlanStep]) {
         self.summary = summary
