@@ -619,14 +619,29 @@ final class ScreenAwarenessService {
     /// Re-scan immediately before writing a drafted reply. Web apps frequently
     /// rebuild their composer while a model is generating, so a stale snapshot
     /// can point at a search field instead of the message box.
+    ///
+    /// `near` is the model's own [[CLIPPY_REPLY_AT:x,y]] hint (already
+    /// resolved into window-space by the caller) — accessibility-label
+    /// matching goes first because it's more precise when it works, but a
+    /// web app's composer (a `contenteditable` div, e.g. LinkedIn's message
+    /// box) frequently exposes an inconsistent or empty AX role/label that
+    /// `preferredReplyTarget` can't match at all. Reusing the same
+    /// point-based dispatch `ScreenPlanRunner` already relies on for exactly
+    /// this case (see `ScreenPlanStep.x`/`.y`) means a screenshot-only click
+    /// still lands correctly instead of silently only ever answering in
+    /// Clippy's own chat.
     @discardableResult
-    func putReplyDraft(_ text: String) async throws -> String {
+    func putReplyDraft(_ text: String, near point: CGPoint? = nil) async throws -> String {
         let elements = try refreshSpatialMap()
-        guard let target = preferredReplyTarget(in: elements) else {
-            throw ScreenAwarenessError.targetNotFound("message box")
+        if let target = preferredReplyTarget(in: elements) {
+            try await put(text, into: target)
+            return target
         }
-        try await put(text, into: target)
-        return target
+        if let point {
+            try await putAtPoint(text, at: point, label: "reply box", pressReturnAfter: false)
+            return "reply box"
+        }
+        throw ScreenAwarenessError.targetNotFound("message box")
     }
 
     @discardableResult

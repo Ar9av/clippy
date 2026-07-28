@@ -358,6 +358,15 @@ final class ChatViewModel: ObservableObject {
                     }
                 }
                 try Task.checkCancellation()
+                var screenReplyPoint: CGPoint?
+                if shouldDraftScreenReply, let target = AIService.screenReplyTarget(from: response) {
+                    response = target.response
+                    screenReplyPoint = CoordinateSpace.resolvedPoint(
+                        target.point,
+                        windowFrame: capturedScreen?.windowFrame,
+                        scale: capturedScreen?.screenshotScale
+                    )
+                }
                 let signaledInsertion = AIService.screenInsertionText(from: response)
                 let parsedScreenPlan = AIService.screenPlan(
                     from: response,
@@ -462,7 +471,7 @@ final class ChatViewModel: ObservableObject {
                 } else if shouldDraftScreenReply {
                     do {
                         let target = try await ScreenAwarenessService.shared
-                            .putReplyDraft(preparedResponse)
+                            .putReplyDraft(preparedResponse, near: screenReplyPoint)
                         screenStatus = "Draft placed in \(target). It was not sent."
                         finishActivity(message: "I drafted it in the reply box — not sent.")
                     } catch {

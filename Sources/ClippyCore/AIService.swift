@@ -56,7 +56,13 @@ public enum ResponsePresentation: Equatable {
             Return only a polished, ready-to-send reply to the most relevant visible message. \
             Match the other person's language and tone, keep it concise, and do not mention screenshots, Clippy, or uncertainty. \
             Never ask the user to attach, paste, share, or describe the message. If no readable conversation is visible, say only: “I can’t find an open conversation on screen.” \
-            Do not use Markdown, a speaker label, or action markers. Never send the reply or claim it was sent.
+            Do not use Markdown or a speaker label. Never send the reply or claim it was sent. \
+            [[CLIPPY_REPLY_AT:x,y]] on its own line at the very end is the one exception to "no action markers": \
+            if you can see the actual reply/message box to type into (not just the conversation), end with it, giving \
+            that box's exact pixel position read off the screenshot, in the same coordinate space as the frames in \
+            Screen Context — this box's accessibility label is often unreliable in web apps, so Clippy will click this \
+            exact point as a fallback if it can't otherwise locate the box. Omit the marker entirely if no distinct \
+            reply box is visible (e.g. the conversation is read-only, or this is plain text with nowhere to type it).
             """
         }
     }
@@ -225,6 +231,33 @@ public enum AIService {
             return ScreenDirective(kind: kind, target: target, response: cleaned)
         }
         return nil
+    }
+
+    /// A `.screenReply` response's optional trailing `[[CLIPPY_REPLY_AT:x,y]]` —
+    /// see the coordinate note on that case's `instructions`. Unlike
+    /// `screenDirective`, this marker is a suffix (it comes after the reply
+    /// text, not before it), and its absence is the common case: most reply
+    /// boxes resolve fine by accessibility label alone, so this is read only
+    /// as a fallback hint, never required.
+    public static func screenReplyTarget(from response: String) -> (point: CGPoint, response: String)? {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"\[\[CLIPPY_REPLY_AT:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\]\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: trimmed,
+                range: NSRange(trimmed.startIndex..., in: trimmed)
+              ),
+              let xRange = Range(match.range(at: 1), in: trimmed),
+              let yRange = Range(match.range(at: 2), in: trimmed),
+              let markerRange = Range(match.range(at: 0), in: trimmed),
+              let x = Double(trimmed[xRange]),
+              let y = Double(trimmed[yRange]) else {
+            return nil
+        }
+        let cleaned = String(trimmed[..<markerRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        return (CGPoint(x: x, y: y), cleaned)
     }
 
     /// Locates the `[[CLIPPY_PLAN]]` JSON object in a response via brace
