@@ -5,6 +5,7 @@ enum ResponsePresentation: Equatable {
     case expanded
     case screenInsert
     case screenPlan
+    case screenPlanStep
     case screenReply
 
     var instructions: String {
@@ -37,6 +38,16 @@ enum ResponsePresentation: Equatable {
             Do not use [[CLIPPY_TYPE]], Markdown, commentary, or any text outside the JSON. \
             If there is no visible editable destination, return [[CLIPPY_NO_TARGET]] followed by one short sentence. \
             Never include Send, Submit, payment, deletion, agreement, password, or other final-action steps.
+            """
+        case .screenPlanStep:
+            """
+            Clippy just performed one screen action and is now showing you a fresh screenshot and Screen Context taken after it, not before. \
+            The real screen rarely matches a prediction exactly — a menu may have opened somewhere unexpected, a dialog may have appeared, a page may still be loading — so judge only from what is actually visible now, not from what the previous step assumed would happen. \
+            Decide the single next step toward the stated goal and return [[CLIPPY_PLAN]] with exactly one step in "steps" (ignore the multi-step format otherwise allowed elsewhere — here only the first step will ever be used, so including more just wastes output). \
+            If the goal already looks accomplished, or the screen shows it's not possible to continue safely, return [[CLIPPY_PLAN]] with an empty "steps" array and a one-sentence summary explaining why you stopped. \
+            Every target must exactly match a label in “Visible actionable controls”, or supply "x"/"y" pixel coordinates read directly off the screenshot when a label match would be unreliable. \
+            Do not use [[CLIPPY_TYPE]], Markdown, commentary, or any text outside the JSON. \
+            Never return a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — that always ends the sequence, not a step to take.
             """
         case .screenReply:
             """
@@ -159,11 +170,12 @@ enum AIService {
     {"summary":"what the plan will do","steps":[{"action":"open","app":"System Settings"},{"action":"click","target":"exact label"},{"action":"wait","seconds":0.8},{"action":"key","key":"tab"},{"action":"type","target":"exact field label","text":"exact text"}]}. \
     Use at most 10 steps. Allowed actions are open, click, wait, key, and type. \
     Every click and type step still needs a short "target" label for the confirmation UI and safety checks, even when you also give coordinates. \
-    A click step may additionally include "x" and "y": the exact pixel position of the control read directly off the screenshot, e.g. {"action":"click","target":"Address bar","x":420,"y":38}. \
-    Use x/y whenever the control's accessibility label is generic, unclear, or likely to not exactly match anything in "Visible actionable controls" — browser address/search bars, toolbar icons, and custom-drawn or canvas UI are the common cases. Clippy will click that exact point directly instead of searching for the label. \
+    A click OR type step may additionally include "x" and "y": the exact pixel position of the control read directly off the screenshot, e.g. {"action":"type","target":"Address bar","text":"https://example.com","x":420,"y":38}. \
+    Use x/y whenever the control's accessibility label is generic, unclear, or likely to not exactly match anything in "Visible actionable controls" — browser address/search bars, toolbar icons, and custom-drawn or canvas UI are the common cases. Clippy will click that exact point directly instead of searching for the label, then type into whatever is actually there. \
+    A browser's own address/search bar is the single most common case where this matters: its exact accessibility label varies across browsers and versions, and some pages (like a browser's own new-tab page) show an on-page search box with the exact same placeholder text right underneath it — a label match can silently land on the wrong one. Always give x/y for the address bar rather than relying on its label alone. \
     Coordinates are in the same space as the frames already given in "Visible actionable controls" and the "Window frame" line, not raw image pixels. \
-    A type step whose target is a browser's own address/search bar and whose text is a full http:// or https:// URL may add "pressReturnAfter":true, e.g. {"action":"type","target":"Address and Search","text":"https://example.com","pressReturnAfter":true} — Clippy will press Return to actually navigate there. \
-    This is the one exception: navigating to a page is not a final action. Never set pressReturnAfter on any other field — it is silently ignored, and dropped as unsafe, everywhere except a URL going into an address bar. \
+    A type step whose target is a browser's own address/search bar may add "pressReturnAfter":true to actually submit it — the text can be a full http:// or https:// URL to navigate, or a plain search query to search with the default engine, e.g. {"action":"type","target":"Address and Search","text":"https://example.com","pressReturnAfter":true} or {"action":"type","target":"Address and Search","text":"ar9av","x":420,"y":38,"pressReturnAfter":true}. \
+    This is the one exception: submitting a browser's own address/search field is not a final action, whether it's a URL or a search term. Never set pressReturnAfter on any other field — it is silently ignored, and dropped as unsafe, everywhere except an address/search bar. \
     Use open to bring another app to the front before acting on it, and key only for tab, escape, up, down, left, or right — there is no Return key outside that one exception, because the user always performs the final submit. \
     Waits may be 0.1 to 8 seconds; prefer a short wait after any click that opens a menu, sheet, or new pane. \
     Sequence as many steps as the task genuinely needs rather than stopping after the first one. \

@@ -17,11 +17,17 @@ protocol ScreenStepPerforming: AnyObject {
     func click(_ target: String, at point: CGPoint) async throws
     func type(_ text: String, into target: String) async throws
     /// Same as `type(_:into:)`, but presses Return afterward. Only ever
-    /// called when `AutomationSafety.isSafeURLNavigation` has already
+    /// called when `AutomationSafety.isSafeAddressBarSubmit` has already
     /// confirmed this is a URL going into an address/search field — see
     /// `ScreenPlanRunner.validate`. Conformers that don't care about the
     /// distinction get a default that just types without submitting.
     func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws
+    /// Types by clicking an exact screen point first, bypassing accessibility
+    /// label resolution for the destination entirely — see `click(_:at:)`
+    /// for why that matters, and `ScreenAwarenessService.putAtPoint` for how
+    /// this actually resolves the field once clicked. Conformers that don't
+    /// need this get a default that falls back to the label-based type.
+    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws
     func press(_ key: ScreenPlanKey) async throws
     func idle(_ seconds: Double) async throws
 }
@@ -33,6 +39,10 @@ extension ScreenStepPerforming {
 
     func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
         try await type(text, into: target)
+    }
+
+    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
+        try await type(text, into: target, pressReturnAfter: pressReturnAfter)
     }
 }
 
@@ -57,6 +67,10 @@ extension ScreenAwarenessService: ScreenStepPerforming {
 
     func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
         try await put(text, into: target, pressReturnAfter: pressReturnAfter)
+    }
+
+    func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
+        try await putAtPoint(text, at: point, label: target, pressReturnAfter: pressReturnAfter)
     }
 
     func idle(_ seconds: Double) async throws {
@@ -151,11 +165,11 @@ final class ScreenPlanRunner {
                     throw ScreenPlanError.unsafeStep(index, target)
                 }
                 // pressReturnAfter is the one narrow exception to "never send
-                // Return" — only for a URL typed into an address/search
+                // Return" — only for text submitted into an address/search
                 // field. Refuse silently downgrading it to a submit key
                 // anywhere else in the plan.
                 if step.pressReturnAfter == true,
-                   !AutomationSafety.isSafeURLNavigation(target: target, text: text) {
+                   !AutomationSafety.isSafeAddressBarSubmit(target: target, text: text) {
                     throw ScreenPlanError.unsafeStep(index, target)
                 }
             case .open:
@@ -221,15 +235,25 @@ final class ScreenPlanRunner {
                 try await performer.click(step.target ?? "")
             }
         case .type:
-            try await performer.type(
-                step.text ?? "",
-                into: step.target ?? "",
-                pressReturnAfter: step.pressReturnAfter == true
-                    && AutomationSafety.isSafeURLNavigation(
-                        target: step.target ?? "",
-                        text: step.text ?? ""
-                    )
-            )
+            let shouldPressReturn = step.pressReturnAfter == true
+                && AutomationSafety.isSafeAddressBarSubmit(
+                    target: step.target ?? "",
+                    text: step.text ?? ""
+                )
+            if let x = step.x, let y = step.y {
+                try await performer.type(
+                    step.text ?? "",
+                    into: step.target ?? "the field",
+                    at: CGPoint(x: x, y: y),
+                    pressReturnAfter: shouldPressReturn
+                )
+            } else {
+                try await performer.type(
+                    step.text ?? "",
+                    into: step.target ?? "",
+                    pressReturnAfter: shouldPressReturn
+                )
+            }
         case .open:
             try await performer.openApp(named: step.app ?? "")
         case .key:

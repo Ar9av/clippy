@@ -162,16 +162,16 @@ final class ScreenPlanRunnerTests: XCTestCase {
         }
     }
 
-    func testRejectsTerminalsAsOpenTargets() {
+    /// `AutomationSafety`'s terminal/agent-CLI blocklist was emptied at the
+    /// user's explicit request (local machine, full access). Return is still
+    /// refused everywhere except a URL into a browser address bar, so a plan
+    /// naming a terminal is now accepted rather than refused outright.
+    func testAllowsTerminalsAsOpenTargetsSinceRestrictionWasIntentionallyDisabled() throws {
         for app in ["Warp", "Terminal", "iTerm", "Ghostty"] {
-            XCTAssertThrowsError(
+            XCTAssertNoThrow(
                 try ScreenPlanRunner.validate(plan([ScreenPlanStep(action: .open, app: app)])),
-                "\(app) must be refused"
-            ) { error in
-                guard case ScreenPlanError.restrictedApp = error else {
-                    return XCTFail("Expected restrictedApp for \(app), got \(error)")
-                }
-            }
+                "\(app) should be allowed now that the blocklist is empty"
+            )
         }
     }
 

@@ -1,29 +1,17 @@
 import AppKit
 
-/// Terminals and agent CLIs run real commands. Clippy must never read their
-/// content as "a message to reply to" or write text into them — a drafted
-/// reply or auto-typed confirmation could silently trigger a destructive or
-/// long-running command (a build, a delete, a deploy) with no real consent.
+/// Terminals and agent CLIs run real commands, so a drafted reply or
+/// auto-typed confirmation landing in one could in principle trigger a real
+/// command. Left empty at the user's explicit request (everything runs on
+/// their own machine) — the residual guard against that is that
+/// `ScreenPlanKey` still excludes Return everywhere except a browser
+/// address/search bar (see `isSafeAddressBarSubmit`), so Clippy can still type
+/// into a terminal but can't press Enter to submit it. Re-add bundle
+/// identifiers/name fragments here to restore the restriction.
 enum AutomationSafety {
-    private static let blockedBundleIdentifiers: Set<String> = [
-        "dev.warp.Warp-Stable",
-        "dev.warp.Warp",
-        "com.apple.Terminal",
-        "com.googlecode.iterm2",
-        "io.alacritty",
-        "co.zeit.hyper",
-        "net.kovidgoyal.kitty",
-        "com.github.wez.wezterm",
-        "com.mitchellh.ghostty",
-        "com.openai.chat",
-        "com.anthropic.claudefordesktop",
-        "com.anthropic.claude"
-    ]
+    private static let blockedBundleIdentifiers: Set<String> = []
 
-    private static let blockedNameFragments = [
-        "warp", "terminal", "iterm", "alacritty", "hyper", "kitty",
-        "wezterm", "ghostty", "codex", "claude"
-    ]
+    private static let blockedNameFragments: [String] = []
 
     static func isRestricted(_ application: NSRunningApplication) -> Bool {
         if let bundleIdentifier = application.bundleIdentifier,
@@ -60,20 +48,21 @@ enum AutomationSafety {
     ]
 
     /// The one narrow exception to "Clippy never sends the Return key":
-    /// typing a URL into a browser's own address/search field and pressing
-    /// Return to navigate. That's what "go to a page" means — it isn't a
-    /// form submission, a purchase, or anything else `isFinalAction` guards
-    /// against. Both the destination field AND the text have to look the
-    /// part; a step that doesn't satisfy this must fall back to leaving the
-    /// text typed and letting the user press Return themselves.
-    static func isSafeURLNavigation(target: String, text: String) -> Bool {
+    /// submitting a browser's own address/search field, whether that's a URL
+    /// (navigate) or plain text (search with the default engine). Either way
+    /// it's the browser's own "go" action — never a form submission, a
+    /// purchase, or anything else `isFinalAction` guards against. Only the
+    /// destination field has to look the part; any single-line, non-empty
+    /// text qualifies, since there's no bare-URL-vs-search-query distinction
+    /// worth gatekeeping when the field itself is what's actually safe here.
+    /// A step that doesn't satisfy this must fall back to leaving the text
+    /// typed and letting the user press Return themselves.
+    static func isSafeAddressBarSubmit(target: String, text: String) -> Bool {
         let normalizedTarget = target.lowercased()
         guard addressFieldFragments.contains(where: normalizedTarget.contains) else {
             return false
         }
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedText.contains("\n") == false else { return false }
-        return trimmedText.lowercased().hasPrefix("http://")
-            || trimmedText.lowercased().hasPrefix("https://")
+        return !trimmedText.isEmpty && !trimmedText.contains("\n")
     }
 }

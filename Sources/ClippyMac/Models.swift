@@ -104,8 +104,9 @@ enum ScreenPlanAction: String, Codable {
     /// Press one navigation key. Deliberately excludes Return: Clippy moves
     /// through an interface but never commits the form at the end of it.
     /// The one exception is `ScreenPlanStep.pressReturnAfter` on a `.type`
-    /// step — URL navigation, gated by `AutomationSafety.isSafeURLNavigation`
-    /// — which is a distinct, narrowly-validated path, not a general key.
+    /// step — submitting a browser's own address/search field, gated by
+    /// `AutomationSafety.isSafeAddressBarSubmit` — which is a distinct,
+    /// narrowly-validated path, not a general key.
     case key
 }
 
@@ -161,20 +162,23 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
     let seconds: Double?
     let app: String?
     let key: ScreenPlanKey?
-    /// Optional screen-point fallback for `.click`: the exact pixel the model
-    /// picked off the screenshot, in the same coordinate space as the frames
-    /// in "Visible actionable controls". Used when accessibility-label
-    /// matching would be unreliable (generic toolbar labels, custom-drawn
-    /// controls) — Clippy moves the pointer there and clicks directly instead
-    /// of resolving `target` through the accessibility tree.
+    /// Optional screen-point fallback for `.click` and `.type`: the exact
+    /// pixel the model picked off the screenshot, in the same coordinate
+    /// space as the frames in "Visible actionable controls". Used when
+    /// accessibility-label matching would be unreliable — generic toolbar
+    /// labels, custom-drawn controls, or a browser's address bar (whose
+    /// exact AX label varies by version, and can collide with a page's own
+    /// look-alike search box). Clippy clicks the exact point directly
+    /// instead of resolving `target` through the accessibility tree.
     let x: Double?
     let y: Double?
     /// `.type` only, and only honored when `AutomationSafety` confirms this
-    /// is a URL typed into a browser's address/search field — see
-    /// `AutomationSafety.isSafeURLNavigation`. Navigating to a page isn't a
-    /// "final action" the way sending, buying, or deleting is, so it's
-    /// exempted from the no-Return rule on `ScreenPlanKey`, but only for
-    /// exactly this case, not as a general submit key.
+    /// is text (a URL or a plain search query) typed into a browser's own
+    /// address/search field — see `AutomationSafety.isSafeAddressBarSubmit`.
+    /// Navigating or searching from that field isn't a "final action" the
+    /// way sending, buying, or deleting is, so it's exempted from the
+    /// no-Return rule on `ScreenPlanKey`, but only for exactly this case,
+    /// not as a general submit key.
     let pressReturnAfter: Bool?
 
     init(

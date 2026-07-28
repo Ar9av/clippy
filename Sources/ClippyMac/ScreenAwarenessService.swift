@@ -189,11 +189,18 @@ final class ScreenAwarenessService {
             requestPermissions()
             throw ScreenAwarenessError.screenRecordingPermission
         }
-        guard let application = topmostExternalApplication()
+        guard let application = topmostExternalApplication(includeRestricted: true)
                 ?? lastExternalApplication else {
             throw ScreenAwarenessError.noExternalApp
         }
-        lastExternalApplication = application
+        // Only remember this as the action-resolution fallback when it's a
+        // legitimate target. `lastExternalApplication` also backs
+        // `refreshSpatialMap()`'s fallback for click/type resolution, and
+        // that path must never end up pointed at a terminal even when it's
+        // the only other window on screen.
+        if !AutomationSafety.isRestricted(application) {
+            lastExternalApplication = application
+        }
 
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
@@ -318,15 +325,73 @@ final class ScreenAwarenessService {
     /// this is the fallback for exactly that case, the same way a person
     /// would just click where they can see the control.
     func clickAtPoint(_ point: CGPoint, label: String) async throws {
+        try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is clicking \(label)")
+        try await Task.sleep(for: .milliseconds(750))
+    }
+
+    /// Types by clicking a raw screen point first, then handing off to
+    /// `ScreenTypingService` — completely bypassing accessibility-label
+    /// resolution for the destination. AX labels are frequently wrong for
+    /// this: they vary across app/browser versions, and some pages put a
+    /// decoy control with an identical-looking label right next to the real
+    /// one (e.g. a page's own embedded search box next to a browser's actual
+    /// address bar, both reading "Search Google or type a URL"). A literal
+    /// click can't be fooled by either problem — `ScreenTypingService`'s
+    /// global mouse-down monitor resolves whatever is really at that pixel
+    /// via `AXUIElementCopyElementAtPosition`, the same way a person clicking
+    /// there would land on it, then reuses its already-robust multi-strategy
+    /// insertion (AX value write, then paste, with the read-back-unavailable
+    /// tolerance already in place) to actually type the text.
+    func putAtPoint(
+        _ text: String,
+        at point: CGPoint,
+        label: String,
+        pressReturnAfter: Bool
+    ) async throws {
+        try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is typing into \(label)")
+        // Give ScreenTypingService's global mouse-down monitor a moment to
+        // resolve and capture the element actually at this point before
+        // acting on it — that capture is dispatched asynchronously.
+        try await Task.sleep(for: .milliseconds(220))
+        // ScreenTypingService.insert replaces the current selection (or
+        // inserts at the cursor if nothing's selected) — it never clears the
+        // field itself. A real click on a browser's address bar auto-selects
+        // its whole contents, but a synthetic click isn't guaranteed to
+        // trigger that app-specific behavior, so leftover text from an
+        // earlier attempt at this same field would otherwise get appended to
+        // instead of replaced (e.g. a retry producing "ar9avar9av"). Select
+        // all explicitly so this always replaces.
+        try await selectAll()
+        _ = try await ScreenTypingService.shared.insert(text)
+        if pressReturnAfter, AutomationSafety.isSafeAddressBarSubmit(target: label, text: text) {
+            try await pressReturnKey()
+        }
+    }
+
+    /// Shared by `clickAtPoint` and `putAtPoint`: the restricted-app refusal,
+    /// app activation, and the actual move/down/up click posted at the HID
+    /// tap (indistinguishable from a real click to any global event monitor,
+    /// which is what lets `ScreenTypingService` pick it up).
+    private func guardedRawClick(at point: CGPoint, label: String, highlightLabel: String) async throws {
         guard !Self.isUnsafeFinalAction(label) else {
             throw ScreenAwarenessError.unsafeAction(label)
+        }
+        // This bypasses `refreshSpatialMap`'s label resolution entirely, so
+        // it needs its own copy of the same check: refuse outright rather
+        // than activating and clicking into whatever app was last legitimately
+        // remembered while a restricted terminal is actually frontmost.
+        if let restrictedFrontmost = topmostExternalApplication(includeRestricted: true),
+           AutomationSafety.isRestricted(restrictedFrontmost) {
+            throw ScreenAwarenessError.restrictedApp(
+                restrictedFrontmost.localizedName ?? "this app"
+            )
         }
         if let application = topmostExternalApplication() ?? lastExternalApplication {
             NSRunningApplication(processIdentifier: application.processIdentifier)?
                 .activate(options: [.activateAllWindows])
             try await Task.sleep(for: .milliseconds(180))
         }
-        highlightController.show(around: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), label: "Clippy is clicking \(label)")
+        highlightController.show(around: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), label: highlightLabel)
         guard let moved = CGEvent(
             mouseEventSource: nil,
             mouseType: .mouseMoved,
@@ -351,7 +416,6 @@ final class ScreenAwarenessService {
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         highlightController.dismiss()
-        try await Task.sleep(for: .milliseconds(750))
     }
 
     /// Mid-sequence, a target usually doesn't exist yet: the previous click is
@@ -368,8 +432,9 @@ final class ScreenAwarenessService {
             } catch let error as ScreenAwarenessError {
                 lastError = error
                 switch error {
-                case .accessibilityPermission, .screenRecordingPermission:
-                    // Waiting will never grant a permission.
+                case .accessibilityPermission, .screenRecordingPermission, .restrictedApp:
+                    // Waiting won't grant a permission, and it won't make the
+                    // frontmost app stop being a terminal either.
                     throw error
                 default:
                     // Everything else is ordinary mid-sequence churn: an app
@@ -465,7 +530,7 @@ final class ScreenAwarenessService {
     }
 
     /// `pressReturnAfter` must only ever arrive here already validated by
-    /// `AutomationSafety.isSafeURLNavigation` — this function does not
+    /// `AutomationSafety.isSafeAddressBarSubmit` — this function does not
     /// re-check the target/text shape itself, since by the time a
     /// `ScreenPlanStep` reaches the performer, `ScreenPlanRunner.validate`
     /// and the safety re-check right before dispatch have already refused
@@ -547,9 +612,9 @@ final class ScreenAwarenessService {
         }
     }
 
-    /// Posted only after `AutomationSafety.isSafeURLNavigation` has already
-    /// confirmed the field and text are a URL going into an address/search
-    /// bar — see the doc comment on `put(_:into:pressReturnAfter:)`.
+    /// Posted only after `AutomationSafety.isSafeAddressBarSubmit` has already
+    /// confirmed the field and text are going into an address/search bar —
+    /// see the doc comment on `put(_:into:pressReturnAfter:)`.
     private func pressReturnKey() async throws {
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: false) else {
@@ -558,6 +623,22 @@ final class ScreenAwarenessService {
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         try await Task.sleep(for: .milliseconds(200))
+    }
+
+    /// Cmd+A. Used before a coordinate-driven type so the field's existing
+    /// content gets replaced rather than appended to — see the call site in
+    /// `putAtPoint` for why a synthetic click can't be trusted to select
+    /// existing content the way a real click on some fields does.
+    private func selectAll() async throws {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+            return
+        }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(80))
     }
 
     /// Re-scan immediately before writing a drafted reply. Web apps frequently
@@ -578,6 +659,17 @@ final class ScreenAwarenessService {
         guard AXIsProcessTrusted() else {
             throw ScreenAwarenessError.accessibilityPermission
         }
+        // Distinguish "nothing else is on screen" from "the frontmost window
+        // belongs to a restricted app" — the latter must refuse outright,
+        // not silently fall back to whatever legitimate app was last
+        // remembered. Resolving a click/type target against some unrelated
+        // app the user isn't even looking at is worse than a clear refusal.
+        if let restrictedFrontmost = topmostExternalApplication(includeRestricted: true),
+           AutomationSafety.isRestricted(restrictedFrontmost) {
+            throw ScreenAwarenessError.restrictedApp(
+                restrictedFrontmost.localizedName ?? "this app"
+            )
+        }
         guard let application = topmostExternalApplication()
                 ?? lastExternalApplication else {
             throw ScreenAwarenessError.noExternalApp
@@ -588,8 +680,22 @@ final class ScreenAwarenessService {
         // this one — with cascaded documents that means several identical
         // "TextArea" candidates and an arbitrary winner.
         let focusedWindow = focusedWindowElement(for: application.processIdentifier)
-        guard let frame = focusedWindowFrame(for: application.processIdentifier)
-                ?? largestVisibleWindowFrame(for: application.processIdentifier) else {
+        let focusedFrame = focusedWindowFrame(for: application.processIdentifier)
+        let largestFrame = largestVisibleWindowFrame(for: application.processIdentifier)
+
+        // Clicking a browser's address bar (or similar) can hand AX focus to
+        // its own autocomplete/suggestions dropdown — a real, on-screen
+        // window, just not the one the actual target lives in. A "focused"
+        // window far smaller than the app's largest one is much more likely
+        // to be exactly that kind of transient popup than the surface the
+        // task is actually working in, so fall back to scanning the whole
+        // app rather than just that popup's subtree.
+        if let focusedFrame, let largestFrame,
+           focusedFrame.width * focusedFrame.height < 0.5 * largestFrame.width * largestFrame.height {
+            return scan(application: application, root: nil, limitedTo: largestFrame)
+        }
+
+        guard let frame = focusedFrame ?? largestFrame else {
             throw ScreenAwarenessError.noWindow
         }
         return scan(application: application, root: focusedWindow, limitedTo: frame)
@@ -722,7 +828,15 @@ final class ScreenAwarenessService {
         return best.0
     }
 
-    private func topmostExternalApplication() -> NSRunningApplication? {
+    /// `includeRestricted: false` (the default) is for anything that will
+    /// act on the result — click, type, or resolve targets — so a terminal
+    /// or agent CLI is never a valid destination. `includeRestricted: true`
+    /// is only for read-only screen capture: silently substituting a
+    /// different, unrelated app in its place would be more confusing than
+    /// just showing the user what's actually on their screen. See
+    /// `AutomationSafety`'s doc comment — the risk it guards against is
+    /// writing into a terminal, not looking at one.
+    private func topmostExternalApplication(includeRestricted: Bool = false) -> NSRunningApplication? {
         guard let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
@@ -741,7 +855,7 @@ final class ScreenAwarenessService {
                     processIdentifier: processIdentifier
                   ),
                   application.activationPolicy == .regular,
-                  !AutomationSafety.isRestricted(application) else {
+                  includeRestricted || !AutomationSafety.isRestricted(application) else {
                 continue
             }
             return application

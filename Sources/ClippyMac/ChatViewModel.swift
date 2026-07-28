@@ -601,41 +601,142 @@ final class ChatViewModel: ObservableObject {
         await executeScreenPlan(plan)
     }
 
+    /// Runs one step, then re-observes the screen and asks the model to
+    /// decide the next one from what actually happened — rather than
+    /// trusting every step a plan predicted up front. The screen rarely
+    /// matches a prediction exactly (a menu opens somewhere unexpected, a
+    /// dialog appears, a page is still loading), and running blind through a
+    /// stale plan is exactly what leaves Clippy clicking into a state it
+    /// never actually observed. `plan.steps` beyond the first are only ever
+    /// used as the very first action; every action after that comes from a
+    /// fresh decide-from-screenshot round.
+    /// A step failing (wrong label, moved control, a menu that opened
+    /// differently) isn't grounds to stop and wait for the user to click
+    /// Try Again — it's exactly what re-observing is for. A fresh screenshot
+    /// after the failure usually shows the model why its guess was wrong, so
+    /// it can propose a different approach on its own. `maxConsecutiveFailures`
+    /// bounds that so a genuinely stuck task still stops instead of retrying
+    /// forever.
+    private static let maxConsecutiveFailures = 3
+
     private func executeScreenPlan(_ plan: PendingScreenPlan) async {
-        pendingScreenPlan = plan
         isRunningScreenPlan = true
         errorMessage = nil
-        screenPlanStatuses = Array(repeating: .pending, count: plan.steps.count)
-        let runner = ScreenPlanRunner(performer: ScreenAwarenessService.shared)
-        do {
-            try await runner.run(plan) { [weak self] progress in
-                guard let self else { return }
-                if self.screenPlanStatuses.indices.contains(progress.index) {
-                    self.screenPlanStatuses[progress.index] = progress.status
-                }
-                if progress.status == .running {
+
+        var executedSteps: [ScreenPlanStep] = []
+        var executedStatuses: [ScreenPlanStepStatus] = []
+        var nextStep = plan.steps.first
+        let summary = plan.summary
+        var stoppedEarly = false
+        var consecutiveFailures = 0
+        var lastFailureReason: String?
+
+        while let step = nextStep, executedSteps.count < ScreenPlanRunner.stepLimit {
+            guard !Task.isCancelled else {
+                stoppedEarly = true
+                break
+            }
+            executedSteps.append(step)
+            executedStatuses.append(.running)
+            pendingScreenPlan = PendingScreenPlan(summary: summary, steps: executedSteps)
+            screenPlanStatuses = executedStatuses
+
+            let runner = ScreenPlanRunner(performer: ScreenAwarenessService.shared)
+            var failureReason: String?
+            do {
+                try await runner.run(PendingScreenPlan(summary: summary, steps: [step])) { [weak self] progress in
+                    guard let self else { return }
                     self.activityMessage = progress.message
                     self.announce(progress.message)
                 }
+                executedStatuses[executedStatuses.count - 1] = .done
+                screenPlanStatuses = executedStatuses
+                consecutiveFailures = 0
+            } catch is CancellationError {
+                executedStatuses[executedStatuses.count - 1] = .failed
+                screenPlanStatuses = executedStatuses
+                stoppedEarly = true
+                break
+            } catch {
+                executedStatuses[executedStatuses.count - 1] = .failed
+                screenPlanStatuses = executedStatuses
+                consecutiveFailures += 1
+                failureReason = error.localizedDescription
+                lastFailureReason = failureReason
+                announce("That didn't work — \(failureReason ?? "trying a different way.")")
             }
+
+            guard !Task.isCancelled else {
+                stoppedEarly = true
+                break
+            }
+
+            if consecutiveFailures >= Self.maxConsecutiveFailures {
+                errorMessage = lastFailureReason
+                screenStatus = "Stopped after \(consecutiveFailures) failed attempts in a row."
+                ScreenAwarenessService.shared.dismissHighlight()
+                announce("Clippy stopped after retrying \(consecutiveFailures) times. \(lastFailureReason ?? "")")
+                finishActivity(message: "I tried a few approaches and got stuck — check the step I flagged.")
+                isRunningScreenPlan = false
+                return
+            }
+
+            nextStep = await decideNextStep(afterAttempting: step, goal: summary, failureReason: failureReason)
+        }
+
+        ScreenAwarenessService.shared.dismissHighlight()
+        if stoppedEarly {
+            screenStatus = "Plan stopped."
+        } else if executedStatuses.last == .failed {
+            // The loop exited because the model, after seeing the failure and
+            // a fresh screenshot, couldn't find another way forward — not
+            // because the task succeeded. Leave the plan and its statuses
+            // visible so the user can see exactly where it gave up.
+            errorMessage = lastFailureReason
+            screenStatus = "Stopped — couldn't find a safe way to continue."
+            announce("Clippy stopped. \(lastFailureReason ?? "It couldn't find a safe way to continue.")")
+            finishActivity(message: "I got stuck and couldn't finish — check the step I flagged.")
+        } else {
             pendingScreenPlan = nil
             screenPlanStatuses = []
-            ScreenAwarenessService.shared.dismissHighlight()
-            screenStatus = "Ran \(plan.steps.count) steps without submitting."
+            screenStatus = "Ran \(executedSteps.count) step\(executedSteps.count == 1 ? "" : "s") without submitting."
             finishActivity(message: "Done — I ran the whole sequence and stopped before submitting.")
-        } catch is CancellationError {
-            screenStatus = "Plan stopped."
-            ScreenAwarenessService.shared.dismissHighlight()
-        } catch {
-            errorMessage = error.localizedDescription
-            // The plan stays on screen with its statuses intact so the
-            // user can see which step failed and retry from there.
-            screenStatus = "Stopped before the remaining steps."
-            ScreenAwarenessService.shared.dismissHighlight()
-            announce("Clippy stopped the plan. \(error.localizedDescription)")
-            finishActivity(message: "I stopped partway — check the step I flagged.")
         }
         isRunningScreenPlan = false
+    }
+
+    /// A standalone, unpersisted follow-up call — it isn't appended to
+    /// `messages`, so an N-step task doesn't spam the visible chat with N
+    /// intermediate exchanges. Returns nil to end the loop: on a failed
+    /// re-capture, a request error, or the model reporting the goal is
+    /// already done (or, after a failure, that it can't find another way).
+    private func decideNextStep(
+        afterAttempting step: ScreenPlanStep,
+        goal: String,
+        failureReason: String?
+    ) async -> ScreenPlanStep? {
+        guard !Task.isCancelled,
+              let context = try? await ScreenAwarenessService.shared.captureContext() else {
+            return nil
+        }
+        let content: String
+        if let failureReason {
+            content = "You just tried: \(step.displayText) — but it failed: \(failureReason). Using the attached current screenshot and Screen Context (taken after the failed attempt), find a different way to reach the goal \"\(goal)\": a different label, coordinates instead of a label, or a different route entirely. If nothing on screen looks like a safe way forward, say so and return no further step."
+        } else {
+            content = "You just completed: \(step.displayText). Toward the goal \"\(goal)\", using the attached current screenshot and Screen Context, decide the single next step — or say the goal already looks complete."
+        }
+        let followUp = ChatMessage(role: .user, content: content)
+        guard let response = try? await AIService.reply(
+            provider: provider,
+            messages: messages + [followUp],
+            model: model,
+            apiKey: KeychainStore.read(account: provider.rawValue),
+            attachments: [context.screenshotURL, context.contextURL],
+            presentation: .screenPlanStep
+        ) else {
+            return nil
+        }
+        return AIService.screenPlan(from: response)?.plan.steps.first
     }
 
     func cancelPendingScreenPlan() {

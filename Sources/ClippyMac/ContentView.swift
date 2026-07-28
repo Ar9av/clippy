@@ -52,7 +52,12 @@ struct ContentView: View {
 
     private var clippyMood: ClippyMood {
         if viewModel.speech.isListening { return .listening }
-        if viewModel.isLoading { return .thinking }
+        // isLoading only covers the initial chat request — a running or
+        // retrying screen plan (including the decide-next-step follow-up
+        // calls between actions) is a separate flag, and without this check
+        // the sprite falls through to idle for the entire time Clippy is
+        // actually working through a task.
+        if viewModel.isLoading || viewModel.isRunningScreenPlan { return .thinking }
         if viewModel.speech.isSpeaking { return .talking }
         if viewModel.errorMessage != nil { return .alert }
         if viewModel.recentlyCompleted { return .success }
