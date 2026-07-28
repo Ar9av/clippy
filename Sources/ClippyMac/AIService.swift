@@ -224,7 +224,12 @@ enum AIService {
         return nil
     }
 
-    static func screenPlan(from response: String, bounds: CGRect? = nil, scale: CGFloat? = nil) -> ParsedScreenPlan? {
+    /// Locates the `[[CLIPPY_PLAN]]` JSON object in a response via brace
+    /// matching (tolerating braces inside quoted strings) and returns it
+    /// alongside whatever plain-language text follows it. Shared by
+    /// `screenPlan(from:)` and `screenPlanStop(from:)` so both parse exactly
+    /// the same JSON shape rather than drifting apart.
+    private static func extractPlanJSON(from response: String) -> (json: String, trailingText: String)? {
         let marker = "[[CLIPPY_PLAN]]"
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(marker) else { return nil }
@@ -266,22 +271,45 @@ enum AIService {
                 }
             }
         }
-        guard let end,
-              let data = String(remainder[start...end]).data(using: .utf8),
+        guard let end else { return nil }
+        let json = String(remainder[start...end])
+        var trailingText = String(remainder[remainder.index(after: end)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if trailingText.hasPrefix("```") {
+            trailingText.removeFirst(3)
+            trailingText = trailingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return (json, trailingText)
+    }
+
+    static func screenPlan(from response: String, bounds: CGRect? = nil, scale: CGFloat? = nil) -> ParsedScreenPlan? {
+        guard let extracted = extractPlanJSON(from: response),
+              let data = extracted.json.data(using: .utf8),
               let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
               (try? ScreenPlanRunner.validate(plan, bounds: bounds, scale: scale)) != nil else {
             return nil
         }
-        var responseText = String(remainder[remainder.index(after: end)...])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if responseText.hasPrefix("```") {
-            responseText.removeFirst(3)
-            responseText = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
         return ParsedScreenPlan(
             plan: plan,
-            response: responseText.isEmpty ? plan.summary : responseText
+            response: extracted.trailingText.isEmpty ? plan.summary : extracted.trailingText
         )
+    }
+
+    /// Parses the model's explicit "I'm done" shape: a `[[CLIPPY_PLAN]]` with
+    /// an empty `steps` array and a one-sentence `summary` explaining why it
+    /// stopped. `screenPlan(from:)` rejects this shape via `validate` (a plan
+    /// must have at least one step to be runnable), which is correct for
+    /// execution but previously meant the model's stop reason was silently
+    /// discarded — this sibling recovers it instead.
+    static func screenPlanStop(from response: String) -> String? {
+        guard let extracted = extractPlanJSON(from: response),
+              let data = extracted.json.data(using: .utf8),
+              let plan = try? JSONDecoder().decode(PendingScreenPlan.self, from: data),
+              plan.steps.isEmpty else {
+            return nil
+        }
+        let summary = plan.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? nil : summary
     }
 
     static func screenPlanFallbackResponse(from response: String) -> String? {

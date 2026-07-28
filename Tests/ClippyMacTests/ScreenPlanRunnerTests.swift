@@ -308,4 +308,41 @@ final class ScreenPlanParsingTests: XCTestCase {
     func testIgnoresResponsesWithoutTheMarker() {
         XCTAssertNil(AIService.screenPlan(from: "Sure, click Appearance and then Dark."))
     }
+
+    // MARK: - Stop-reason parsing
+
+    func testScreenPlanStopRecoversTheModelsSummary() {
+        let response = """
+        [[CLIPPY_PLAN]]{"summary":"Dark mode is already on — nothing left to do.","steps":[]}
+        """
+        XCTAssertEqual(AIService.screenPlanStop(from: response), "Dark mode is already on — nothing left to do.")
+    }
+
+    func testScreenPlanRejectsTheEmptyStepsShapeThatScreenPlanStopAccepts() {
+        // `validate` requires at least one step to be runnable, so the same
+        // response must be nil from screenPlan(from:) even though
+        // screenPlanStop(from:) recovers its reason above.
+        let response = """
+        [[CLIPPY_PLAN]]{"summary":"Dark mode is already on — nothing left to do.","steps":[]}
+        """
+        XCTAssertNil(AIService.screenPlan(from: response))
+    }
+
+    func testScreenPlanStopIgnoresNonEmptyPlans() {
+        let response = """
+        [[CLIPPY_PLAN]]{"summary":"Turn on dark mode","steps":[{"action":"click","target":"Dark"}]}
+        """
+        XCTAssertNil(AIService.screenPlanStop(from: response))
+    }
+
+    func testScreenPlanStopIgnoresBlankSummary() {
+        let response = """
+        [[CLIPPY_PLAN]]{"summary":"   ","steps":[]}
+        """
+        XCTAssertNil(AIService.screenPlanStop(from: response))
+    }
+
+    func testScreenPlanStopIgnoresResponsesWithoutTheMarker() {
+        XCTAssertNil(AIService.screenPlanStop(from: "Looks like that's already done."))
+    }
 }

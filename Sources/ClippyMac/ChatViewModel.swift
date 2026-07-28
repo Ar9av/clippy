@@ -649,8 +649,16 @@ final class ChatViewModel: ObservableObject {
         var consecutiveRepeats = 0
         var lastFailureReason: String?
         var stalledOnRepeat = false
+        // Set when the model explicitly says the goal is done (or can't
+        // safely continue) via an empty-steps [[CLIPPY_PLAN]] — a real
+        // success/stop signal, never conflated with a request failure.
+        var modelStopReason: String?
+        // Set when re-planning itself failed (provider error, unreadable
+        // response) — this must never be reported as success just because
+        // `nextStep` ended up nil.
+        var loopError: String?
 
-        while let step = nextStep, executedSteps.count < ScreenPlanRunner.stepLimit {
+        stepLoop: while let step = nextStep, executedSteps.count < ScreenPlanRunner.stepLimit {
             guard !Task.isCancelled else {
                 stoppedEarly = true
                 break
@@ -708,22 +716,45 @@ final class ChatViewModel: ObservableObject {
             let settleMillis = (step.action == .type && step.pressReturnAfter == true) ? 1400 : 500
             try? await Task.sleep(for: .milliseconds(settleMillis))
 
-            let proposed = await decideNextStep(afterAttempting: step, goal: summary, failureReason: failureReason)
-            if let proposed, Self.isEquivalentAction(proposed, step) {
-                consecutiveRepeats += 1
-            } else {
-                consecutiveRepeats = 0
-            }
-            if consecutiveRepeats >= Self.maxConsecutiveRepeats {
-                stalledOnRepeat = true
+            let decision = await decideNextStep(afterAttempting: step, goal: summary, failureReason: failureReason)
+            guard !Task.isCancelled else {
+                stoppedEarly = true
                 break
             }
-            nextStep = proposed
+            switch decision {
+            case .step(let proposed):
+                if Self.isEquivalentAction(proposed, step) {
+                    consecutiveRepeats += 1
+                } else {
+                    consecutiveRepeats = 0
+                }
+                if consecutiveRepeats >= Self.maxConsecutiveRepeats {
+                    stalledOnRepeat = true
+                    break stepLoop
+                }
+                nextStep = proposed
+            case .stop(let reason):
+                modelStopReason = reason
+                nextStep = nil
+            case .error(let message):
+                loopError = message
+                nextStep = nil
+            }
         }
 
         ScreenAwarenessService.shared.dismissHighlight()
         if stoppedEarly {
             screenStatus = "Plan stopped."
+        } else if let loopError {
+            // The re-planning round itself failed (provider error, unreadable
+            // response, or a failed re-capture) — this must read as an error,
+            // not as "the model decided to stop," even though the plan itself
+            // is now paused with no next step.
+            errorMessage = loopError
+            screenStatus = "Stopped — I couldn't check what happened next."
+            announce("Clippy stopped. \(loopError)")
+            finishActivity(message: "Something interrupted me while checking the next step — check what ran so far.")
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — couldn't confirm the next step (\(loopError))")
         } else if stalledOnRepeat {
             screenStatus = "Stopped — kept proposing the same step without progress."
             announce("Clippy stopped. It kept proposing the same step without anything changing.")
@@ -739,11 +770,28 @@ final class ChatViewModel: ObservableObject {
             announce("Clippy stopped. \(lastFailureReason ?? "It couldn't find a safe way to continue.")")
             finishActivity(message: "I got stuck and couldn't finish — check the step I flagged.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — couldn't find a safe way to continue")
+        } else if let modelStopReason {
+            // The only real success path: the model itself, looking at a
+            // fresh screenshot, said the goal is done (or can't safely
+            // continue) and gave a reason — surface that reason verbatim
+            // rather than a generic "done" that discards it.
+            pendingScreenPlan = nil
+            screenPlanStatuses = []
+            screenStatus = modelStopReason
+            finishActivity(message: modelStopReason)
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: nil)
+        } else if executedSteps.count >= ScreenPlanRunner.stepLimit {
+            // Hit the step cap with a next step still queued — the task was
+            // truncated, not completed. Never claim success here.
+            screenStatus = "Reached the \(ScreenPlanRunner.stepLimit)-step limit before finishing."
+            announce("Clippy reached its step limit before finishing.")
+            finishActivity(message: "I hit my \(ScreenPlanRunner.stepLimit)-step limit before finishing — here's where I got to.")
+            postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — reached the step limit before finishing")
         } else {
             pendingScreenPlan = nil
             screenPlanStatuses = []
-            screenStatus = "Ran \(executedSteps.count) step\(executedSteps.count == 1 ? "" : "s") without submitting."
-            finishActivity(message: "Done — I ran the whole sequence and stopped before submitting.")
+            screenStatus = "Ran \(executedSteps.count) step\(executedSteps.count == 1 ? "" : "s")."
+            finishActivity(message: "Done — I ran the whole sequence.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: nil)
         }
         isRunningScreenPlan = false
@@ -782,19 +830,29 @@ final class ChatViewModel: ObservableObject {
         persistMessages()
     }
 
+    /// What the re-plan round decided. Distinguishing these three keeps a
+    /// provider error or a failed re-capture from ever being reported as
+    /// success — previously all three collapsed into a single `nil`, so a
+    /// mid-plan network error read exactly like the model saying "I'm done."
+    private enum NextStepDecision {
+        case step(ScreenPlanStep)
+        case stop(reason: String?)
+        case error(String)
+    }
+
     /// A standalone, unpersisted follow-up call — it isn't appended to
     /// `messages`, so an N-step task doesn't spam the visible chat with N
-    /// intermediate exchanges. Returns nil to end the loop: on a failed
-    /// re-capture, a request error, or the model reporting the goal is
-    /// already done (or, after a failure, that it can't find another way).
+    /// intermediate exchanges.
     private func decideNextStep(
         afterAttempting step: ScreenPlanStep,
         goal: String,
         failureReason: String?
-    ) async -> ScreenPlanStep? {
-        guard !Task.isCancelled,
-              let context = try? await ScreenAwarenessService.shared.captureContext() else {
-            return nil
+    ) async -> NextStepDecision {
+        let context: ScreenContext
+        do {
+            context = try await ScreenAwarenessService.shared.captureContext()
+        } catch {
+            return .error(error.localizedDescription)
         }
         let content: String
         if let failureReason {
@@ -803,17 +861,26 @@ final class ChatViewModel: ObservableObject {
             content = "You just completed: \(step.displayText). Toward the goal \"\(goal)\", using the attached current screenshot and Screen Context, decide the single next step — or say the goal already looks complete."
         }
         let followUp = ChatMessage(role: .user, content: content)
-        guard let response = try? await AIService.reply(
-            provider: provider,
-            messages: messages + [followUp],
-            model: model,
-            apiKey: KeychainStore.read(account: provider.rawValue),
-            attachments: [context.screenshotURL, context.contextURL],
-            presentation: .screenPlanStep
-        ) else {
-            return nil
+        let response: String
+        do {
+            response = try await AIService.reply(
+                provider: provider,
+                messages: messages + [followUp],
+                model: model,
+                apiKey: KeychainStore.read(account: provider.rawValue),
+                attachments: [context.screenshotURL, context.contextURL],
+                presentation: .screenPlanStep
+            )
+        } catch {
+            return .error(error.localizedDescription)
         }
-        return AIService.screenPlan(from: response, bounds: context.windowFrame, scale: context.screenshotScale)?.plan.steps.first
+        if let next = AIService.screenPlan(from: response, bounds: context.windowFrame, scale: context.screenshotScale)?.plan.steps.first {
+            return .step(next)
+        }
+        if let reason = AIService.screenPlanStop(from: response) {
+            return .stop(reason: reason)
+        }
+        return .error("I couldn't understand the model's next step.")
     }
 
     func cancelPendingScreenPlan() {
