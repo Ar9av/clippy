@@ -95,6 +95,11 @@ final class ChatViewModel: ObservableObject {
     func send(_ suggestedText: String? = nil) {
         var text = (suggestedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !pendingAttachments.isEmpty), !isLoading else { return }
+        if pendingScreenPlan != nil, !isRunningScreenPlan, Self.isAffirmativeConfirmation(text) {
+            draft = ""
+            runPendingScreenPlan()
+            return
+        }
         if text.isEmpty {
             text = "Please look at the attached file and tell me what you notice."
         }
@@ -174,9 +179,14 @@ final class ChatViewModel: ObservableObject {
         let shouldBuildScreenPlan = forceScreenPlan
             || Self.requestsScreenPlan(history.last?.content ?? "")
         let shouldDraftScreenReply = Self.requestsScreenReply(history.last?.content ?? "")
-        let shouldInspectScreen = Self.requestsScreenContext(history.last?.content ?? "")
-            || shouldBuildScreenPlan
-            || shouldDraftScreenReply
+        // Always capture the screen + running-app list rather than gating it
+        // behind a hand-written phrase list. The model decides from that
+        // context whether the request needs a click, a multi-app workflow,
+        // or no screen action at all — matching phrases like "open", "do it",
+        // or something we never thought to enumerate would otherwise leave
+        // it answering blind. The presentation-specific flags below still
+        // shape formatting strictness once we know context is available.
+        let shouldInspectScreen = ScreenAwarenessService.shared.canSeeScreen
         let presentation: ResponsePresentation
         if shouldWriteToScreen {
             presentation = .screenInsert
@@ -217,15 +227,12 @@ final class ChatViewModel: ObservableObject {
                     )
                     messages.append(ChatMessage(
                         role: .assistant,
-                        content: "I found \(target). Review the one safe step below."
+                        content: "Putting that into \(target)."
                     ))
                     persistMessages()
-                    pendingScreenPlan = plan
-                    screenStatus = "Waiting for approval to run 1 step."
-                    finishActivity(message: "I found the destination. Check the step.")
-                    if speakReplies { speech.speak("I found the destination. Check the step.") }
                     activityTask?.cancel()
                     isLoading = false
+                    await autoRunScreenPlan(plan)
                     currentRequestTask = nil
                     return
                 }
@@ -321,8 +328,21 @@ final class ChatViewModel: ObservableObject {
                         finishActivity(message: "Ready when you are.")
                     }
                 } else if willWriteToScreen {
-                    let appName = try await ScreenTypingService.shared.insert(preparedResponse)
-                    finishActivity(message: "Typed into \(appName).")
+                    // Prefer the field the screen capture above already found —
+                    // it doesn't require the destination to have been clicked
+                    // or polled into focus, unlike ScreenTypingService's live
+                    // tracker. Fall back to that tracker only when no screen
+                    // was captured (e.g. screen-recording permission denied).
+                    if let capturedScreen,
+                       let target = ScreenAwarenessService.shared.preferredEditableTarget(
+                        in: capturedScreen.elements
+                       ) {
+                        try await ScreenAwarenessService.shared.put(preparedResponse, into: target)
+                        finishActivity(message: "Typed into \(target).")
+                    } else {
+                        let appName = try await ScreenTypingService.shared.insert(preparedResponse)
+                        finishActivity(message: "Typed into \(appName).")
+                    }
                 } else if shouldDraftScreenReply {
                     do {
                         let target = try await ScreenAwarenessService.shared
@@ -336,9 +356,9 @@ final class ChatViewModel: ObservableObject {
                         finishActivity(message: "Your reply is ready to copy.")
                     }
                 } else if let parsedScreenPlan {
-                    pendingScreenPlan = parsedScreenPlan.plan
-                    screenStatus = "Waiting for approval to run \(parsedScreenPlan.plan.steps.count) steps."
-                    finishActivity(message: "I mapped the route. Check the steps.")
+                    activityTask?.cancel()
+                    isLoading = false
+                    await autoRunScreenPlan(parsedScreenPlan.plan)
                 } else {
                     finishActivity()
                 }
@@ -407,6 +427,20 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
+    private static func isAffirmativeConfirmation(_ request: String) -> Bool {
+        let normalized = request
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
+        let phrases: Set<String> = [
+            "yes", "yep", "yeah", "yup", "sure", "ok", "okay",
+            "do it", "go ahead", "run it", "run the plan", "confirm",
+            "sounds good", "yes please", "yeah do it", "go for it",
+            "looks good", "lgtm"
+        ]
+        return phrases.contains(normalized)
+    }
+
     private static func requestsScreenTyping(_ request: String) -> Bool {
         let normalized = request
             .lowercased()
@@ -439,7 +473,10 @@ final class ChatViewModel: ObservableObject {
     }
 
     private static func requestsScreenPlan(_ request: String) -> Bool {
-        let normalized = request.lowercased()
+        let normalized = request
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
         let navigation = [
             "navigate", "go to", "open the", "find the", "find and",
             "click through", "take me to"
@@ -459,7 +496,18 @@ final class ChatViewModel: ObservableObject {
             "in settings", "the setting", "the settings", "the menu",
             "the option", "dark mode", "light mode"
         ].contains { normalized.contains($0) }
-        return changeVerb && onScreenDestination
+        if changeVerb && onScreenDestination { return true }
+
+        // A short imperative with no other content ("open", "do it for me")
+        // almost always means "act on what you just told me about" — usually
+        // a link Clippy itself just suggested. These never satisfy the more
+        // specific phrase pairs above, so they need their own direct check.
+        let actionConfirmations: Set<String> = [
+            "open", "open it", "open that", "open this", "open it for me",
+            "open that for me", "open for me", "do it", "do it for me",
+            "go there", "go for it", "take me there", "visit it", "visit that"
+        ]
+        return actionConfirmations.contains(normalized)
     }
 
     private static func defaultDirectiveMessage(
@@ -534,42 +582,60 @@ final class ChatViewModel: ObservableObject {
 
     func runPendingScreenPlan() {
         guard let plan = pendingScreenPlan, !isRunningScreenPlan else { return }
+        currentRequestTask = Task {
+            await executeScreenPlan(plan)
+            currentRequestTask = nil
+        }
+    }
+
+    /// Runs a plan immediately, with no approval step. Used for plans Clippy
+    /// builds itself in direct response to an explicit user request (e.g.
+    /// "open X for me") — `ScreenPlanRunner`/`AutomationSafety` still refuse
+    /// any step that touches Send, Submit, payment, deletion, or password
+    /// controls, so this only auto-runs the steps already judged safe.
+    /// Callers that are already inside `currentRequestTask` should await this
+    /// directly rather than going through `runPendingScreenPlan()`, which
+    /// would spawn a second task and stomp on the first's task reference.
+    func autoRunScreenPlan(_ plan: PendingScreenPlan) async {
+        guard !isRunningScreenPlan else { return }
+        await executeScreenPlan(plan)
+    }
+
+    private func executeScreenPlan(_ plan: PendingScreenPlan) async {
+        pendingScreenPlan = plan
         isRunningScreenPlan = true
         errorMessage = nil
         screenPlanStatuses = Array(repeating: .pending, count: plan.steps.count)
         let runner = ScreenPlanRunner(performer: ScreenAwarenessService.shared)
-        currentRequestTask = Task {
-            do {
-                try await runner.run(plan) { [weak self] progress in
-                    guard let self else { return }
-                    if self.screenPlanStatuses.indices.contains(progress.index) {
-                        self.screenPlanStatuses[progress.index] = progress.status
-                    }
-                    if progress.status == .running {
-                        self.activityMessage = progress.message
-                        self.announce(progress.message)
-                    }
+        do {
+            try await runner.run(plan) { [weak self] progress in
+                guard let self else { return }
+                if self.screenPlanStatuses.indices.contains(progress.index) {
+                    self.screenPlanStatuses[progress.index] = progress.status
                 }
-                pendingScreenPlan = nil
-                screenPlanStatuses = []
-                ScreenAwarenessService.shared.dismissHighlight()
-                screenStatus = "Ran \(plan.steps.count) steps without submitting."
-                finishActivity(message: "Done — I ran the whole sequence and stopped before submitting.")
-            } catch is CancellationError {
-                screenStatus = "Plan stopped."
-                ScreenAwarenessService.shared.dismissHighlight()
-            } catch {
-                errorMessage = error.localizedDescription
-                // The plan stays on screen with its statuses intact so the
-                // user can see which step failed and retry from there.
-                screenStatus = "Stopped before the remaining steps."
-                ScreenAwarenessService.shared.dismissHighlight()
-                announce("Clippy stopped the plan. \(error.localizedDescription)")
-                finishActivity(message: "I stopped partway — check the step I flagged.")
+                if progress.status == .running {
+                    self.activityMessage = progress.message
+                    self.announce(progress.message)
+                }
             }
-            isRunningScreenPlan = false
-            currentRequestTask = nil
+            pendingScreenPlan = nil
+            screenPlanStatuses = []
+            ScreenAwarenessService.shared.dismissHighlight()
+            screenStatus = "Ran \(plan.steps.count) steps without submitting."
+            finishActivity(message: "Done — I ran the whole sequence and stopped before submitting.")
+        } catch is CancellationError {
+            screenStatus = "Plan stopped."
+            ScreenAwarenessService.shared.dismissHighlight()
+        } catch {
+            errorMessage = error.localizedDescription
+            // The plan stays on screen with its statuses intact so the
+            // user can see which step failed and retry from there.
+            screenStatus = "Stopped before the remaining steps."
+            ScreenAwarenessService.shared.dismissHighlight()
+            announce("Clippy stopped the plan. \(error.localizedDescription)")
+            finishActivity(message: "I stopped partway — check the step I flagged.")
         }
+        isRunningScreenPlan = false
     }
 
     func cancelPendingScreenPlan() {

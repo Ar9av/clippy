@@ -227,10 +227,14 @@ final class ScreenAwarenessService {
         try writePNG(image, to: screenshotURL)
 
         let windowTitle = window.title?.isEmpty == false ? window.title! : "Untitled"
+        let otherApps = Self.otherRunningApplications(excluding: application)
         let spatialText = """
         Current app: \(application.localizedName ?? "Unknown")
         Current window: \(windowTitle)
         Window frame: x \(Int(window.frame.minX)), y \(Int(window.frame.minY)), width \(Int(window.frame.width)), height \(Int(window.frame.height))
+
+        Other open apps (already running — prefer switching to one of these over launching a new instance, and reuse an already-open tab/document when the task fits it): \
+        \(otherApps.isEmpty ? "none" : otherApps.joined(separator: ", "))
 
         Visible actionable controls (screen coordinates):
         \(elements.prefix(100).map(\.contextLine).joined(separator: "\n"))
@@ -304,6 +308,49 @@ final class ScreenAwarenessService {
         try await waitForTarget(query)
         _ = try highlight(matching: query, instruction: "Clippy is clicking \(query)")
         try clickHighlighted()
+        try await Task.sleep(for: .milliseconds(750))
+    }
+
+    /// Clicks a raw screen point instead of resolving a label through the
+    /// accessibility tree. Custom-drawn controls (browser toolbars, canvas
+    /// UIs, some Electron apps) often expose no usable AX label at all, or
+    /// one that doesn't match what a model would guess from the screenshot —
+    /// this is the fallback for exactly that case, the same way a person
+    /// would just click where they can see the control.
+    func clickAtPoint(_ point: CGPoint, label: String) async throws {
+        guard !Self.isUnsafeFinalAction(label) else {
+            throw ScreenAwarenessError.unsafeAction(label)
+        }
+        if let application = topmostExternalApplication() ?? lastExternalApplication {
+            NSRunningApplication(processIdentifier: application.processIdentifier)?
+                .activate(options: [.activateAllWindows])
+            try await Task.sleep(for: .milliseconds(180))
+        }
+        highlightController.show(around: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), label: "Clippy is clicking \(label)")
+        guard let moved = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ), let down = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ), let up = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) else {
+            highlightController.dismiss()
+            throw ScreenAwarenessError.targetUnavailable
+        }
+        moved.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(60))
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        highlightController.dismiss()
         try await Task.sleep(for: .milliseconds(750))
     }
 
@@ -414,8 +461,18 @@ final class ScreenAwarenessService {
     }
 
     func put(_ text: String, into query: String) async throws {
+        try await put(text, into: query, pressReturnAfter: false)
+    }
+
+    /// `pressReturnAfter` must only ever arrive here already validated by
+    /// `AutomationSafety.isSafeURLNavigation` — this function does not
+    /// re-check the target/text shape itself, since by the time a
+    /// `ScreenPlanStep` reaches the performer, `ScreenPlanRunner.validate`
+    /// and the safety re-check right before dispatch have already refused
+    /// anything that isn't a URL going into an address/search field.
+    func put(_ text: String, into query: String, pressReturnAfter: Bool) async throws {
         try await waitForTarget(query)
-        let resolved = try resolve(query)
+        let resolved = try resolve(query, preferEditable: true)
         let role = stringAttribute(kAXRoleAttribute, from: resolved.element) ?? ""
         let subrole = stringAttribute(kAXSubroleAttribute, from: resolved.element) ?? ""
         guard subrole != kAXSecureTextFieldSubrole as String,
@@ -450,10 +507,15 @@ final class ScreenAwarenessService {
         if result == .success {
             try await Task.sleep(for: .milliseconds(160))
             if stringAttribute(kAXValueAttribute, from: resolved.element) == text {
-                highlightController.show(
-                    around: resolved.summary.frame,
-                    label: "Text added — Clippy did not submit it"
-                )
+                if pressReturnAfter {
+                    try await pressReturnKey()
+                    highlightController.show(around: resolved.summary.frame, label: "Navigating to \(text)")
+                } else {
+                    highlightController.show(
+                        around: resolved.summary.frame,
+                        label: "Text added — Clippy did not submit it"
+                    )
+                }
                 return
             }
         }
@@ -474,10 +536,28 @@ final class ScreenAwarenessService {
            !written.contains(text) {
             throw ScreenAwarenessError.textNotAccepted(query)
         }
-        highlightController.show(
-            around: resolved.summary.frame,
-            label: "Text added — Clippy did not submit it"
-        )
+        if pressReturnAfter {
+            try await pressReturnKey()
+            highlightController.show(around: resolved.summary.frame, label: "Navigating to \(text)")
+        } else {
+            highlightController.show(
+                around: resolved.summary.frame,
+                label: "Text added — Clippy did not submit it"
+            )
+        }
+    }
+
+    /// Posted only after `AutomationSafety.isSafeURLNavigation` has already
+    /// confirmed the field and text are a URL going into an address/search
+    /// bar — see the doc comment on `put(_:into:pressReturnAfter:)`.
+    private func pressReturnKey() async throws {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: false) else {
+            return
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(200))
     }
 
     /// Re-scan immediately before writing a drafted reply. Web apps frequently
@@ -613,11 +693,15 @@ final class ScreenAwarenessService {
             .label
     }
 
-    private func resolve(_ query: String) throws -> ResolvedElement {
+    private func resolve(_ query: String, preferEditable: Bool = false) throws -> ResolvedElement {
         let normalizedQuery = Self.normalized(query)
         let queryWords = Set(normalizedQuery.split(separator: " ").map(String.init))
         let candidates = resolvedElements.values.filter(\.summary.enabled)
-        let isFieldIntent = Self.isFieldIntent(normalizedQuery)
+        // `preferEditable` is set by callers that already know this is a typing
+        // action (`put`), so a phrase like "address bar" that doesn't literally
+        // say "field"/"box" still gets biased toward the real editable control
+        // instead of a same-named toolbar label or group.
+        let isFieldIntent = preferEditable || Self.isFieldIntent(normalizedQuery)
         let ranked = candidates.map { candidate -> (ResolvedElement, Int) in
             let label = Self.normalized(candidate.summary.label)
             let labelWords = Set(label.split(separator: " ").map(String.init))
@@ -997,6 +1081,20 @@ final class ScreenAwarenessService {
             .replacingOccurrences(of: #"[^a-z0-9 ]"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Lets the model choose to switch to an already-running app instead of
+    /// defaulting to "open a new instance" for every plan step.
+    private static func otherRunningApplications(excluding current: NSRunningApplication) -> [String] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .filter { $0.processIdentifier != current.processIdentifier }
+            .filter { $0.bundleIdentifier != Bundle.main.bundleIdentifier }
+            .filter { !AutomationSafety.isRestricted($0) }
+            .compactMap(\.localizedName)
+            .reduce(into: [String]()) { result, name in
+                if !result.contains(name) { result.append(name) }
+            }
     }
 }
 

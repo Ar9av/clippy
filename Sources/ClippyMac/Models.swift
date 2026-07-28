@@ -103,6 +103,9 @@ enum ScreenPlanAction: String, Codable {
     case open
     /// Press one navigation key. Deliberately excludes Return: Clippy moves
     /// through an interface but never commits the form at the end of it.
+    /// The one exception is `ScreenPlanStep.pressReturnAfter` on a `.type`
+    /// step — URL navigation, gated by `AutomationSafety.isSafeURLNavigation`
+    /// — which is a distinct, narrowly-validated path, not a general key.
     case key
 }
 
@@ -158,6 +161,21 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
     let seconds: Double?
     let app: String?
     let key: ScreenPlanKey?
+    /// Optional screen-point fallback for `.click`: the exact pixel the model
+    /// picked off the screenshot, in the same coordinate space as the frames
+    /// in "Visible actionable controls". Used when accessibility-label
+    /// matching would be unreliable (generic toolbar labels, custom-drawn
+    /// controls) — Clippy moves the pointer there and clicks directly instead
+    /// of resolving `target` through the accessibility tree.
+    let x: Double?
+    let y: Double?
+    /// `.type` only, and only honored when `AutomationSafety` confirms this
+    /// is a URL typed into a browser's address/search field — see
+    /// `AutomationSafety.isSafeURLNavigation`. Navigating to a page isn't a
+    /// "final action" the way sending, buying, or deleting is, so it's
+    /// exempted from the no-Return rule on `ScreenPlanKey`, but only for
+    /// exactly this case, not as a general submit key.
+    let pressReturnAfter: Bool?
 
     init(
         action: ScreenPlanAction,
@@ -165,7 +183,10 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
         text: String? = nil,
         seconds: Double? = nil,
         app: String? = nil,
-        key: ScreenPlanKey? = nil
+        key: ScreenPlanKey? = nil,
+        x: Double? = nil,
+        y: Double? = nil,
+        pressReturnAfter: Bool? = nil
     ) {
         self.action = action
         self.target = target
@@ -173,6 +194,9 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
         self.seconds = seconds
         self.app = app
         self.key = key
+        self.x = x
+        self.y = y
+        self.pressReturnAfter = pressReturnAfter
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -182,6 +206,9 @@ struct ScreenPlanStep: Identifiable, Codable, Equatable {
         case seconds
         case app
         case key
+        case x
+        case y
+        case pressReturnAfter
     }
 
     var displayText: String {

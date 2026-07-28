@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.hasShadow = false
+            window.contentView?.wantsLayer = true
+            window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             window.level = (!isExpanded || floating) ? .floating : .normal
             window.isMovableByWindowBackground = true
             window.titlebarAppearsTransparent = true

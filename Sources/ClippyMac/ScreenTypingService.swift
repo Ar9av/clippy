@@ -493,7 +493,7 @@ final class ScreenTypingService {
                 valueBefore: valueBeforeInsertion,
                 rangeBefore: rangeBeforeInsertion,
                 in: verificationElement
-            ) {
+            ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement) {
                 return
             }
             pasteboard.clearContents()
@@ -511,7 +511,7 @@ final class ScreenTypingService {
                 valueBefore: valueBeforeInsertion,
                 rangeBefore: rangeBeforeInsertion,
                 in: verificationElement
-            ) {
+            ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement) {
                 return
             }
             pasteboard.clearContents()
@@ -544,7 +544,7 @@ final class ScreenTypingService {
             valueBefore: valueBeforeInsertion,
             rangeBefore: rangeBeforeInsertion,
             in: target.element
-        ) {
+        ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: target.element) {
             return
         }
 
@@ -589,6 +589,19 @@ final class ScreenTypingService {
         ) else {
             throw ScreenTypingError.unsupportedField
         }
+    }
+
+    /// Some editors (custom canvases, certain Electron/WebKit views) never
+    /// expose `kAXValueAttribute` or `kAXSelectedTextRangeAttribute`, so
+    /// `insertionSucceeded` can never observe a change even when a real
+    /// paste keystroke landed. Treat "nothing readable before or after" as
+    /// unverifiable rather than as a failure, so a genuine paste isn't
+    /// discarded and retried into duplicate insertions.
+    private func canVerifyInsertion(valueBefore: String?, in element: AXUIElement) -> Bool {
+        if valueBefore != nil { return true }
+        if rangeAttribute(kAXSelectedTextRangeAttribute, from: element) != nil { return true }
+        if stringAttribute(kAXValueAttribute, from: element) != nil { return true }
+        return false
     }
 
     private func insertionSucceeded(

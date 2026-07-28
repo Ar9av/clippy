@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// The five things a plan step can ask of the screen. Splitting this out from
 /// `ScreenAwarenessService` keeps the sequencing rules — ordering, validation,
@@ -7,9 +8,32 @@ import Foundation
 protocol ScreenStepPerforming: AnyObject {
     func openApp(named name: String) async throws
     func click(_ target: String) async throws
+    /// Click at an exact screen point instead of resolving `target` through
+    /// the accessibility tree — used when the model already knows where the
+    /// control is from the screenshot, which is more reliable than a label
+    /// match for generic/custom-drawn controls (e.g. a browser's address bar).
+    /// Conformers that don't need this get a default that falls back to the
+    /// label-only `click(_:)`.
+    func click(_ target: String, at point: CGPoint) async throws
     func type(_ text: String, into target: String) async throws
+    /// Same as `type(_:into:)`, but presses Return afterward. Only ever
+    /// called when `AutomationSafety.isSafeURLNavigation` has already
+    /// confirmed this is a URL going into an address/search field — see
+    /// `ScreenPlanRunner.validate`. Conformers that don't care about the
+    /// distinction get a default that just types without submitting.
+    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws
     func press(_ key: ScreenPlanKey) async throws
     func idle(_ seconds: Double) async throws
+}
+
+extension ScreenStepPerforming {
+    func click(_ target: String, at point: CGPoint) async throws {
+        try await click(target)
+    }
+
+    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
+        try await type(text, into: target)
+    }
 }
 
 /// The live implementation: every step goes through the same accessibility
@@ -23,8 +47,16 @@ extension ScreenAwarenessService: ScreenStepPerforming {
         try await runClick(matching: target)
     }
 
+    func click(_ target: String, at point: CGPoint) async throws {
+        try await clickAtPoint(point, label: target)
+    }
+
     func type(_ text: String, into target: String) async throws {
         try await put(text, into: target)
+    }
+
+    func type(_ text: String, into target: String, pressReturnAfter: Bool) async throws {
+        try await put(text, into: target, pressReturnAfter: pressReturnAfter)
     }
 
     func idle(_ seconds: Double) async throws {
@@ -118,6 +150,14 @@ final class ScreenPlanRunner {
                 guard !AutomationSafety.isFinalAction(target) else {
                     throw ScreenPlanError.unsafeStep(index, target)
                 }
+                // pressReturnAfter is the one narrow exception to "never send
+                // Return" — only for a URL typed into an address/search
+                // field. Refuse silently downgrading it to a submit key
+                // anywhere else in the plan.
+                if step.pressReturnAfter == true,
+                   !AutomationSafety.isSafeURLNavigation(target: target, text: text) {
+                    throw ScreenPlanError.unsafeStep(index, target)
+                }
             case .open:
                 guard let app = step.app?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !app.isEmpty else {
@@ -175,9 +215,21 @@ final class ScreenPlanRunner {
     private func perform(_ step: ScreenPlanStep) async throws {
         switch step.action {
         case .click:
-            try await performer.click(step.target ?? "")
+            if let x = step.x, let y = step.y {
+                try await performer.click(step.target ?? "the control", at: CGPoint(x: x, y: y))
+            } else {
+                try await performer.click(step.target ?? "")
+            }
         case .type:
-            try await performer.type(step.text ?? "", into: step.target ?? "")
+            try await performer.type(
+                step.text ?? "",
+                into: step.target ?? "",
+                pressReturnAfter: step.pressReturnAfter == true
+                    && AutomationSafety.isSafeURLNavigation(
+                        target: step.target ?? "",
+                        text: step.text ?? ""
+                    )
+            )
         case .open:
             try await performer.openApp(named: step.app ?? "")
         case .key:

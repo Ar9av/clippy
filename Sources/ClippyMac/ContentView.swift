@@ -7,6 +7,31 @@ private enum CompactPanel {
     case open
 }
 
+/// SwiftUI's `NSHostingView` repaints its own opaque layer background on
+/// every re-render (new chat messages, plan cards, animation frames), which
+/// silently undoes the one-shot `NSWindow` transparency setup done in
+/// `AppDelegate.configureWindows()`. `updateNSView` runs alongside every
+/// SwiftUI diff pass, so re-asserting clarity here keeps it from reverting.
+private struct TransparentWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { configure(view) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: NSView) {
+        guard let window = view.window else { return }
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,6 +73,7 @@ struct ContentView: View {
             reduceMotion ? nil : .easeInOut(duration: 0.18),
             value: viewModel.isExpanded
         )
+        .background(TransparentWindowConfigurator().allowsHitTesting(false))
         .ignoresSafeArea()
         .sheet(isPresented: $viewModel.showSettings) {
             SettingsView()
@@ -397,7 +423,12 @@ struct ContentView: View {
 
     private func compactScreenPlan(_ plan: PendingScreenPlan) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("\(plan.steps.count)-step plan ready", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            Label(
+                viewModel.isRunningScreenPlan
+                    ? "Running \(plan.steps.count)-step plan…"
+                    : "\(plan.steps.count)-step plan",
+                systemImage: "point.topleft.down.to.point.bottomright.curvepath"
+            )
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.black)
             Text(plan.summary)
@@ -405,11 +436,11 @@ struct ContentView: View {
                 .foregroundStyle(.black.opacity(0.78))
                 .lineLimit(2)
             HStack(spacing: 10) {
-                Button("Review steps") {
+                Button("Watch steps") {
                     viewModel.setExpanded(true)
                 }
                 .buttonStyle(ClassicButtonStyle())
-                Button("Cancel") {
+                Button(viewModel.isRunningScreenPlan ? "Stop" : "Cancel") {
                     viewModel.cancelPendingScreenPlan()
                 }
                 .buttonStyle(.plain)

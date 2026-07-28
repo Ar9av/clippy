@@ -54,4 +54,26 @@ enum AutomationSafety {
         let normalized = label.lowercased()
         return finalActionFragments.contains { normalized.contains($0) }
     }
+
+    private static let addressFieldFragments = [
+        "address", "url", "location bar", "omnibox", "search bar", "search or type"
+    ]
+
+    /// The one narrow exception to "Clippy never sends the Return key":
+    /// typing a URL into a browser's own address/search field and pressing
+    /// Return to navigate. That's what "go to a page" means — it isn't a
+    /// form submission, a purchase, or anything else `isFinalAction` guards
+    /// against. Both the destination field AND the text have to look the
+    /// part; a step that doesn't satisfy this must fall back to leaving the
+    /// text typed and letting the user press Return themselves.
+    static func isSafeURLNavigation(target: String, text: String) -> Bool {
+        let normalizedTarget = target.lowercased()
+        guard addressFieldFragments.contains(where: normalizedTarget.contains) else {
+            return false
+        }
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedText.contains("\n") == false else { return false }
+        return trimmedText.lowercased().hasPrefix("http://")
+            || trimmedText.lowercased().hasPrefix("https://")
+    }
 }
