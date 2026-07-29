@@ -1318,4 +1318,5 @@ extension Notification.Name {
     static let clippyWindowLevelChanged = Notification.Name("clippyWindowLevelChanged")
     static let clippyExpansionChanged = Notification.Name("clippyExpansionChanged")
     static let clippyBalloonVisibilityChanged = Notification.Name("clippyBalloonVisibilityChanged")
+    static let clippyBalloonContentSizeChanged = Notification.Name("clippyBalloonContentSizeChanged")
 }

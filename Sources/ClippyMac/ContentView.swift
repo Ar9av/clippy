@@ -210,6 +210,17 @@ struct ContentView: View {
                 .onTapGesture(count: 2) { viewModel.setExpanded(true) }
                 .help(compactBalloonVisible ? "Hide balloon; double-click to open chat" : "Show balloon")
         }
+        // Measures the balloon+sprite's real rendered size and relays it to
+        // AppDelegate so the click-catching window can shrink to match — a
+        // PreferenceKey/.onPreferenceChange here never delivered anything
+        // past its (0, 0) default despite the GeometryReader itself
+        // reporting correct sizes, so this reads proxy.size directly instead.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.onAppear { publishBalloonContentSize(proxy.size) }
+                    .onChange(of: proxy.size) { _, newSize in publishBalloonContentSize(newSize) }
+            }
+        )
         .padding(.horizontal, 8)
         .padding(.bottom, 3)
         .frame(width: 250, height: 340, alignment: .bottom)
@@ -553,6 +564,14 @@ struct ContentView: View {
         NotificationCenter.default.post(
             name: .clippyBalloonVisibilityChanged,
             object: resolvedVisibility
+        )
+    }
+
+    private func publishBalloonContentSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        NotificationCenter.default.post(
+            name: .clippyBalloonContentSizeChanged,
+            object: size
         )
     }
 

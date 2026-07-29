@@ -48,7 +48,7 @@ public enum ResponsePresentation: Equatable {
             If the goal already looks accomplished, or the screen shows it's not possible to continue safely, return [[CLIPPY_PLAN]] with an empty "steps" array and a one-sentence summary explaining why you stopped. \
             Every target must exactly match a label in “Visible actionable controls”, or supply "x"/"y" coordinates in that same space (not raw screenshot pixels — see the coordinate note below) when a label match would be unreliable. \
             Do not use [[CLIPPY_TYPE]], Markdown, commentary, or any text outside the JSON. \
-            Never return a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — that always ends the sequence, not a step to take.
+            Never return a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — that means a real-world consequential action (messaging someone, spending money, destroying data, handing over a credential), not a self-contained, reversible one like pressing “=” on a calculator or clicking “Calculate”/“Apply”. If the task is otherwise done, finish it with that kind of step rather than stopping one step early.
             """
         case .screenReply:
             """
@@ -189,10 +189,11 @@ public enum AIService {
     Use open to bring another app to the front before acting on it, and key only for tab, escape, up, down, left, or right — there is no Return key outside that one exception, because the user always performs the final submit. \
     Waits may be 0.1 to 8 seconds; prefer a short wait after any click that opens a menu, sheet, or new pane. \
     Sequence as many steps as the task genuinely needs rather than stopping after the first one. \
-    Never include a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password. \
-    After the JSON, add one short plain-language sentence. The app will show the complete plan and require confirmation before running it. \
+    Never include a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — this means real-world consequential actions with an effect outside the app itself: messaging someone, spending money, agreeing to a contract, permanently destroying data, or handing over a credential. \
+    It does not mean a self-contained, reversible completion with no outside effect: pressing “=” on a calculator, submitting a search box, finishing a game move, or clicking “Calculate”/“Apply”/“Preview” are not final actions — include them so the task actually finishes instead of leaving it half-done. \
+    After the JSON, add one short plain-language sentence describing what the plan will attempt, not what already happened — never state a result as fact before the plan has run. \
     When a Screen Context attachment is present and the user asks to change, update, enable, disable, switch, or select something in the current app, return the same multi-step plan format. \
-    Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop before any final or irreversible action. \
+    Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop only before a real-world consequential action as defined above. \
     You are running as a local desktop client. Never claim you changed files or performed an action unless the user explicitly saw that happen. \
     Use plain language and light humor when it fits.
     """

@@ -5,6 +5,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isExpanded = false
     private var isCompactBalloonVisible = true
     private var pointerPassthroughTimer: Timer?
+    /// The balloon's actual rendered size, relayed live from SwiftUI via
+    /// `clippyBalloonContentSizeChanged`. Falls back to the full compact
+    /// window size until the first measurement arrives, so nothing regresses
+    /// for the one frame before that notification fires.
+    private var balloonContentSize = CGSize(width: 250, height: 340)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ScreenPlanSelfTest.isRequested {
@@ -39,6 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let visible = notification.object as? Bool ?? true
             self?.isCompactBalloonVisible = visible
             UserDefaults.standard.set(visible, forKey: "compactBalloonVisible")
+            self?.updatePointerPassthrough()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .clippyBalloonContentSizeChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let size = notification.object as? CGSize else { return }
+            self?.balloonContentSize = size
             self?.updatePointerPassthrough()
         }
     }
@@ -112,24 +126,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // swallows every click meant for the app underneath.
             guard window.identifier != clippyOverlayWindowIdentifier else { continue }
 
-            // Expanded chat, visible balloons, and sheets remain conventionally interactive.
+            // Expanded chat and sheets fill their window for real, so the whole
+            // frame is legitimately interactive there.
             guard !isExpanded,
-                  !balloonVisible,
                   window.sheetParent == nil,
                   window.attachedSheet == nil else {
                 window.ignoresMouseEvents = false
                 continue
             }
 
-            // In the tucked-away state only the artwork at the lower-right of the
-            // otherwise transparent window should catch the pointer. Everything
-            // above and beside it belongs to the application underneath.
-            let clippyHitRegion = NSRect(
-                x: window.frame.maxX - 158,
-                y: window.frame.minY,
-                width: 150,
-                height: 132
-            )
+            // Only the actually-drawn artwork should catch the pointer — the
+            // rest of this otherwise-transparent window belongs to whatever
+            // app is underneath. The window itself is a fixed 250x340, but a
+            // short balloon (or none at all, tucked away) only occupies part
+            // of that, and used to leave dead space on top that still ate
+            // clicks meant for the app behind it.
+            let hitSize: CGSize = balloonVisible
+                ? CGSize(width: min(balloonContentSize.width, window.frame.width),
+                         height: min(balloonContentSize.height, window.frame.height))
+                : CGSize(width: 150, height: 132)
+            // The compact frame centers its content horizontally and anchors
+            // it to the bottom (`.frame(..., alignment: .bottom)` in
+            // ContentView) — mirror that here so the hit region tracks where
+            // the content actually lands, not the window's raw corner.
+            let clippyHitRegion = balloonVisible
+                ? NSRect(
+                    x: window.frame.minX + (window.frame.width - hitSize.width) / 2,
+                    y: window.frame.minY,
+                    width: hitSize.width,
+                    height: hitSize.height
+                  )
+                : NSRect(
+                    x: window.frame.maxX - 158,
+                    y: window.frame.minY,
+                    width: hitSize.width,
+                    height: hitSize.height
+                  )
             window.ignoresMouseEvents = !clippyHitRegion.contains(pointer)
         }
     }
