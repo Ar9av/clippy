@@ -94,7 +94,9 @@ Sources/
     ChatStore.swift              Conversation, history, and pending-plan persistence.
     SpeechService.swift          Dictation and spoken replies, including the optional local Whisper engine.
     ListeningIndicatorView.swift Animated waveform and pulse shown while dictation is listening.
-    PushToTalkMonitor.swift      Hold-⌘⌥ push-to-talk chord tracking.
+    PushToTalkMonitor.swift      Hold-to-talk chord tracking for both dictation routes.
+    CustomPrompt.swift           User-defined slash commands and their parsing.
+    BalloonAction.swift          The balloon menu's rows, ordering, and visibility.
     OnboardingView.swift         First-run permissions primer.
     PermissionsModel.swift       Live Accessibility and Screen Recording permission state.
     ClippySpriteView.swift       Sprite-sheet animation and the floating character's on-screen look.
@@ -180,6 +182,18 @@ user's macOS Keychain.
 
 ## Other features
 
+- **Slash commands.** `/clear` clears the chat and starts a new session,
+  `/help` lists everything. Save prompts you use often as your own commands in
+  Settings ▸ Custom prompts — anything typed after the command is appended, so
+  `/review this function` works as well as a bare `/review`. Typing `/` shows
+  the matching commands above the composer.
+- **An editable balloon menu.** The floating paperclip's options can be
+  renamed, reordered, or hidden in Settings ▸ Balloon menu, and any custom
+  prompt can be surfaced there as a one-click row. Each built-in row keeps its
+  behaviour — only the wording is yours.
+- **Follows your active display.** On a multi-monitor setup Clippy moves to
+  whichever screen holds the app you just switched to, keeping its relative
+  position, and recovers itself if the display it was on is unplugged.
 - Spoken replies and microphone dictation, with an optional local Whisper
   engine (inspired by [OpenWhispr](https://github.com/OpenWhispr/openwhispr))
   for more accurate, fully offline transcription — off by default, offered

@@ -267,6 +267,14 @@ struct ContentView: View {
                     viewModel.setExpanded(true)
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        // A bare SF Symbol is only ~13pt across, and the window
+                        // is `isMovableByWindowBackground`, so a near-miss got
+                        // interpreted as a window drag rather than a click —
+                        // the button looked dead. Give it a real target, like
+                        // the expanded window's header buttons already have.
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.black)
@@ -373,36 +381,62 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private func balloonRow(_ action: BalloonAction) -> some View {
+        switch action.kind {
+        case .askHere:
+            ClassicOptionButton(action.displayTitle) {
+                compactInputActive = true
+                compactInputFocused = true
+            }
+        case .lookAtScreen:
+            ClassicOptionButton(action.displayTitle) {
+                compactInputActive = true
+                viewModel.inspectCurrentScreen()
+            }
+        case .codingSessions:
+            ClassicOptionButton(action.displayTitle) {
+                viewModel.refreshSessions()
+                compactPanel = .sessions
+            }
+        case .openSomething:
+            ClassicOptionButton(action.displayTitle) {
+                compactPanel = .open
+            }
+        case .fullChat:
+            ClassicOptionButton(action.displayTitle) {
+                viewModel.setExpanded(true)
+            }
+        case .dismiss:
+            // Deliberately not a ClassicOptionButton: this one dismisses rather
+            // than navigating, and the checkbox styling says so.
+            Button {
+                setCompactBalloonVisible(false)
+            } label: {
+                Label(action.displayTitle, systemImage: "square")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.black)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
     private var compactMenu: some View {
         VStack(alignment: .leading, spacing: 9) {
             switch compactPanel {
             case .home:
-                ClassicOptionButton("Ask Clippy here") {
-                    compactInputActive = true
-                    compactInputFocused = true
+                // Rows, their wording, and their order all come from Settings;
+                // the behaviour behind each is fixed by its `kind`.
+                ForEach(viewModel.visibleBalloonActions) { action in
+                    balloonRow(action)
                 }
-                ClassicOptionButton("Look at this screen") {
-                    compactInputActive = true
-                    viewModel.inspectCurrentScreen()
+                ForEach(viewModel.balloonPrompts) { prompt in
+                    ClassicOptionButton(prompt.balloonTitle) {
+                        compactInputActive = true
+                        setCompactBalloonVisible(true)
+                        viewModel.send(prompt.prompt)
+                    }
                 }
-                ClassicOptionButton("Continue a coding session") {
-                    viewModel.refreshSessions()
-                    compactPanel = .sessions
-                }
-                ClassicOptionButton("Open something") {
-                    compactPanel = .open
-                }
-                ClassicOptionButton("Open the full chat window") {
-                    viewModel.setExpanded(true)
-                }
-                Button {
-                    setCompactBalloonVisible(false)
-                } label: {
-                    Label("Don’t show me this right now", systemImage: "square")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.black)
-                }
-                .buttonStyle(.plain)
 
             case .sessions:
                 if viewModel.recentSessions.isEmpty {
@@ -1024,8 +1058,66 @@ struct ContentView: View {
         .padding(.horizontal, 14)
     }
 
+    /// Commands matching what's been typed so far, shown above the composer so
+    /// the feature is discoverable without having to remember `/help`.
+    private var matchingCommands: [(command: String, detail: String)] {
+        let trimmed = viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only while typing the command itself — once there's a space the user
+        // has moved on to arguments and the list is just in the way.
+        guard trimmed.hasPrefix("/"), !trimmed.contains(" ") else { return [] }
+        let typed = trimmed.dropFirst().lowercased()
+
+        var all: [(command: String, detail: String)] = [
+            ("clear", "Clear the chat and start a new session"),
+            ("help", "List every command")
+        ]
+        all += viewModel.customPrompts
+            .filter(\.isValid)
+            .sorted { $0.command < $1.command }
+            .map {
+                (
+                    $0.command,
+                    $0.prompt.replacingOccurrences(of: "\n", with: " ")
+                )
+            }
+        return all.filter { typed.isEmpty || $0.command.hasPrefix(typed) }
+    }
+
+    private var commandPalette: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(matchingCommands, id: \.command) { entry in
+                Button {
+                    viewModel.draft = "/\(entry.command)"
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("/\(entry.command)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        Text(entry.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .stroke(Color.secondary.opacity(0.22))
+        )
+    }
+
     private var composer: some View {
         VStack(spacing: 9) {
+            if !matchingCommands.isEmpty {
+                commandPalette
+            }
+
             if !viewModel.pendingAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
@@ -1614,6 +1706,112 @@ struct SettingsView: View {
                     Text("Off (recommended) waits for you to tap Run plan on anything beyond a single app switch or address-bar navigation.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                .padding(8)
+            }
+
+            GroupBox("Balloon menu") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("The options offered by the floating paperclip. Rename them, reorder them, or untick ones you never use. Each row keeps what it does — only the wording is yours.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach($viewModel.balloonActions) { $action in
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: $action.isVisible)
+                                .labelsHidden()
+                                .help(action.isVisible ? "Shown in the balloon" : "Hidden")
+                            VStack(alignment: .leading, spacing: 2) {
+                                TextField(action.kind.defaultTitle, text: $action.title)
+                                    .textFieldStyle(.roundedBorder)
+                                Text(action.kind.behaviourNote)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            VStack(spacing: 2) {
+                                Button {
+                                    viewModel.moveBalloonAction(id: action.id, by: -1)
+                                } label: {
+                                    Image(systemName: "chevron.up")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.balloonActions.first?.id == action.id)
+                                Button {
+                                    viewModel.moveBalloonAction(id: action.id, by: 1)
+                                } label: {
+                                    Image(systemName: "chevron.down")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.balloonActions.last?.id == action.id)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("Reset to defaults") { viewModel.resetBalloonActions() }
+                            .font(.caption)
+                    }
+                }
+                .padding(8)
+            }
+
+            GroupBox("Custom prompts") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Save a prompt you use often as a slash command, then type it in the chat. Anything you add after the command is appended to the prompt, so `/review this function` works too.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Built in: `/clear` starts a new session, `/help` lists everything.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    ForEach($viewModel.customPrompts) { $prompt in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 4) {
+                                    Text("/").foregroundStyle(.secondary)
+                                    TextField("command", text: Binding(
+                                        get: { prompt.command },
+                                        // Normalizing on every keystroke keeps
+                                        // what's stored matchable — a command
+                                        // saved with spaces or capitals could
+                                        // never be typed successfully.
+                                        set: { prompt.command = CustomPrompt.normalize($0) }
+                                    ))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 130)
+                                }
+                                TextField("What should Clippy do?", text: $prompt.prompt, axis: .vertical)
+                                    .textFieldStyle(.roundedBorder)
+                                    .lineLimit(1...4)
+                                Toggle("Show in balloon menu", isOn: $prompt.showsInBalloon)
+                                    .font(.caption)
+                            }
+                            Button {
+                                viewModel.customPrompts.removeAll { $0.id == prompt.id }
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Delete this prompt")
+                        }
+
+                        if !prompt.isValid {
+                            Text(
+                                CustomPrompt.reservedCommands.contains(prompt.command)
+                                    ? "`/\(prompt.command)` is built in — pick another name."
+                                    : "Needs both a command and a prompt to be usable."
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        }
+                    }
+
+                    Button {
+                        viewModel.customPrompts.append(CustomPrompt(command: "", prompt: ""))
+                    } label: {
+                        Label("Add prompt", systemImage: "plus")
+                    }
                 }
                 .padding(8)
             }

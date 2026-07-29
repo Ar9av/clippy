@@ -26,6 +26,43 @@ final class ChatViewModel: ObservableObject {
     /// sequence advancing and where it stopped if something failed.
     @Published private(set) var screenPlanStatuses: [ScreenPlanStepStatus] = []
     @Published private(set) var screenStatus: String?
+    /// User-defined slash commands, editable in Settings. Stored as JSON
+    /// rather than a plist array so the shape can grow without a migration.
+    @Published var customPrompts: [CustomPrompt] = [] {
+        didSet {
+            guard let data = try? JSONEncoder().encode(customPrompts) else { return }
+            UserDefaults.standard.set(data, forKey: "customPrompts")
+        }
+    }
+    /// The floating balloon's home menu, seeded with the built-in rows so
+    /// Settings has something to show on a fresh install.
+    @Published var balloonActions: [BalloonAction] = BalloonAction.defaults {
+        didSet {
+            guard let data = try? JSONEncoder().encode(balloonActions) else { return }
+            UserDefaults.standard.set(data, forKey: "balloonActions")
+        }
+    }
+
+    /// Balloon rows the user has kept, plus any custom prompts they've asked to
+    /// surface there. Drives the compact menu.
+    var visibleBalloonActions: [BalloonAction] {
+        balloonActions.filter(\.isVisible)
+    }
+
+    var balloonPrompts: [CustomPrompt] {
+        customPrompts.filter { $0.showsInBalloon && $0.isValid }
+    }
+
+    func resetBalloonActions() {
+        balloonActions = BalloonAction.defaults
+    }
+
+    func moveBalloonAction(id: UUID, by offset: Int) {
+        guard let index = balloonActions.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard balloonActions.indices.contains(target) else { return }
+        balloonActions.swapAt(index, target)
+    }
     @Published var provider: AIProvider {
         didSet {
             UserDefaults.standard.set(provider.rawValue, forKey: "provider")
@@ -84,6 +121,14 @@ final class ChatViewModel: ObservableObject {
         animateClippy = UserDefaults.standard.object(forKey: "animateClippy") as? Bool ?? false
         alwaysAutoRunScreenPlans = UserDefaults.standard.object(forKey: "alwaysAutoRunScreenPlans") as? Bool ?? false
         showOnboarding = !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        if let data = UserDefaults.standard.data(forKey: "customPrompts"),
+           let decoded = try? JSONDecoder().decode([CustomPrompt].self, from: data) {
+            customPrompts = decoded
+        }
+        if let data = UserDefaults.standard.data(forKey: "balloonActions"),
+           let decoded = try? JSONDecoder().decode([BalloonAction].self, from: data) {
+            balloonActions = BalloonAction.merged(stored: decoded)
+        }
         ScreenTypingService.shared.startTracking()
         ScreenAwarenessService.shared.startTracking()
         refreshSessions()
@@ -116,6 +161,31 @@ final class ChatViewModel: ObservableObject {
 
     func send(_ suggestedText: String? = nil) {
         var text = (suggestedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Handled ahead of the in-flight guards below so `/clear` still works
+        // as an escape hatch while a request or screen plan is running — which
+        // is exactly when you're most likely to want to start over.
+        if let command = SlashCommand.parse(text, prompts: customPrompts) {
+            switch command {
+            case .clear:
+                draft = ""
+                clearConversation()
+                return
+            case .help:
+                draft = ""
+                postAssistantNote(SlashCommand.helpText(prompts: customPrompts))
+                return
+            case .unknown(let name):
+                draft = ""
+                postAssistantNote(
+                    "I don't have a `/\(name)` command.\n\n"
+                        + SlashCommand.helpText(prompts: customPrompts)
+                )
+                return
+            case .expanded(let expansion):
+                text = expansion
+            }
+        }
         // A running plan holds currentRequestTask just like a chat request
         // does — without also checking isRunningScreenPlan here, a message
         // typed while a plan is mid-flight would start a second request that
@@ -1224,6 +1294,15 @@ final class ChatViewModel: ObservableObject {
         guard isExpanded != expanded else { return }
         isExpanded = expanded
         NotificationCenter.default.post(name: .clippyExpansionChanged, object: expanded)
+    }
+
+    /// Adds an assistant message that came from Clippy itself rather than a
+    /// model response — command help and unknown-command replies — so they
+    /// read in the transcript like any other answer.
+    private func postAssistantNote(_ text: String) {
+        errorMessage = nil
+        messages.append(ChatMessage(role: .assistant, content: text))
+        persistMessages()
     }
 
     func clearConversation() {
