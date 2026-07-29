@@ -16,11 +16,6 @@
 
 <br>
 
-<div align="center">
-  <img src="Resources/ClippySprites.png" width="640" alt="Clippy sprite sheet" />
-  <br>
-  <sub>Every animation frame Clippy can strike — idle, thinking, talking, listening, success, alert.</sub>
-</div>
 
 ## What it actually does
 
