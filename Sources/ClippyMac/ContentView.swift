@@ -35,11 +35,25 @@ private struct TransparentWindowConfigurator: NSViewRepresentable {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
+    // `SpeechService` is a nested ObservableObject on ChatViewModel, not one
+    // of its `@Published` properties — reading `speech.X` here
+    // does NOT subscribe this view to speech's own changes, so isListening
+    // toggling, dictation errors, and the model-download state only ever
+    // appeared to update when something else (draft, isLoading, a hover
+    // state) happened to force a re-render at the same time. Observed
+    // directly instead, same reasoning as OnboardingView/SettingsView.
+    @ObservedObject var speech: SpeechService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveringClippy = false
     @State private var compactInputActive = false
     @State private var compactBalloonVisible = true
     @State private var pasteMonitor: Any?
+    @State private var pushToTalk: PushToTalkMonitor?
+    /// Whether the in-flight push-to-talk session was started while another
+    /// app was frontmost. Captured at press time, because by the time the keys
+    /// come back up the answer may have changed — and it decides whether the
+    /// text lands in that app's text field or in Clippy's own composer.
+    @State private var dictationTargetsExternalApp = false
     @State private var compactInputFocused = false
     @State private var compactPanel: CompactPanel = .home
     @State private var showHistory = false
@@ -57,14 +71,14 @@ struct ContentView: View {
     ]
 
     private var clippyMood: ClippyMood {
-        if viewModel.speech.isListening { return .listening }
+        if speech.isListening { return .listening }
         // isLoading only covers the initial chat request — a running or
         // retrying screen plan (including the decide-next-step follow-up
         // calls between actions) is a separate flag, and without this check
         // the sprite falls through to idle for the entire time Clippy is
         // actually working through a task.
         if viewModel.isLoading || viewModel.isRunningScreenPlan { return .thinking }
-        if viewModel.speech.isSpeaking { return .talking }
+        if speech.isSpeaking { return .talking }
         if viewModel.errorMessage != nil { return .alert }
         if viewModel.recentlyCompleted { return .success }
         return .idle
@@ -87,11 +101,11 @@ struct ContentView: View {
         .background(TransparentWindowConfigurator().allowsHitTesting(false))
         .ignoresSafeArea()
         .sheet(isPresented: $viewModel.showSettings) {
-            SettingsView()
+            SettingsView(speech: viewModel.speech)
                 .environmentObject(viewModel)
         }
         .sheet(isPresented: $viewModel.showOnboarding) {
-            OnboardingView(permissions: viewModel.permissions) {
+            OnboardingView(permissions: viewModel.permissions, speech: viewModel.speech) {
                 viewModel.finishOnboarding()
             }
             .environmentObject(viewModel)
@@ -100,7 +114,7 @@ struct ContentView: View {
             ChatHistoryView()
                 .environmentObject(viewModel)
         }
-        .onChange(of: viewModel.speech.isListening) { _, isListening in
+        .onChange(of: speech.isListening) { _, isListening in
             if isListening { draftBeforeDictation = viewModel.draft }
         }
         // errorMessage previously stuck around indefinitely once set — the
@@ -114,8 +128,11 @@ struct ContentView: View {
         .onChange(of: viewModel.isExpanded) { _, _ in
             viewModel.errorMessage = nil
         }
-        .onChange(of: viewModel.speech.transcript) { _, newValue in
-            guard viewModel.speech.isListening || !newValue.isEmpty else { return }
+        .onChange(of: speech.transcript) { _, newValue in
+            // Dictation aimed at another app must not also accumulate in
+            // Clippy's composer — that text is delivered on release instead.
+            guard !dictationTargetsExternalApp else { return }
+            guard speech.isListening || !newValue.isEmpty else { return }
             guard !draftBeforeDictation.isEmpty else {
                 viewModel.draft = newValue
                 return
@@ -125,24 +142,34 @@ struct ContentView: View {
         }
         .onAppear {
             installPasteMonitor()
+            installPushToTalkMonitor()
             publishBalloonVisibility()
+            // Push-to-talk is unusable if the first hold spends its whole
+            // duration loading the model: you speak, release, and nothing was
+            // ever recorded. Warm it up at launch instead so the microphone
+            // opens as soon as the chord engages.
+            if speech.useLocalWhisper {
+                Task { await speech.prepareWhisperModel() }
+            }
         }
         .onDisappear {
             if let pasteMonitor {
                 NSEvent.removeMonitor(pasteMonitor)
                 self.pasteMonitor = nil
             }
+            pushToTalk?.stopMonitoring()
+            pushToTalk = nil
         }
         .alert(
             "Clippy needs permission",
             isPresented: Binding(
-                get: { viewModel.speech.authorizationError != nil },
-                set: { if !$0 { viewModel.speech.authorizationError = nil } }
+                get: { speech.authorizationError != nil },
+                set: { if !$0 { speech.authorizationError = nil } }
             )
         ) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(viewModel.speech.authorizationError ?? "")
+            Text(speech.authorizationError ?? "")
         }
     }
 
@@ -542,6 +569,70 @@ struct ContentView: View {
         }
     }
 
+    private func installPushToTalkMonitor() {
+        guard pushToTalk == nil else { return }
+        let monitor = PushToTalkMonitor(
+            start: { route in
+                // Only the ⌘⌥ route aimed at another app bypasses the
+                // composer; dictating to Clippy (or to Clippy's own window)
+                // should still show up live as you speak.
+                dictationTargetsExternalApp = route == .focusedApp && !NSApp.isActive
+                if route == .clippy {
+                    // Switch the balloon into conversation mode up front.
+                    // `compactStatusMessage` shows the generic "what would you
+                    // like to do?" menu whenever `compactInputActive` is false,
+                    // ahead of any check for the latest reply — so without
+                    // this the answer lands in the expanded window but the
+                    // balloon silently reverts to the menu.
+                    setCompactBalloonVisible(true)
+                    compactInputActive = true
+                }
+                Task { await speech.beginPushToTalk() }
+            },
+            stop: { route in
+                let external = dictationTargetsExternalApp
+                Task {
+                    let dictated = await speech.endPushToTalk()
+                    dictationTargetsExternalApp = false
+                    guard !dictated.isEmpty else { return }
+                    if external {
+                        await deliverDictationToFocusedApp(dictated)
+                    } else if route == .clippy {
+                        // The composer already holds the live transcript plus
+                        // anything typed before it, so send that rather than
+                        // the bare transcript.
+                        viewModel.send()
+                    }
+                }
+            },
+            cancel: { _ in
+                Task {
+                    _ = await speech.endPushToTalk()
+                    dictationTargetsExternalApp = false
+                }
+            }
+        )
+        monitor.startMonitoring()
+        pushToTalk = monitor
+    }
+
+    /// Types dictated text straight into whatever editable field the user had
+    /// focused, falling back to the clipboard when there's nowhere safe to put
+    /// it (no Accessibility permission, no editable target, or a password
+    /// field — `insert` refuses those outright). The fallback is announced,
+    /// since text silently vanishing is worse than text in the wrong place.
+    private func deliverDictationToFocusedApp(_ text: String) async {
+        do {
+            // The text appearing in the field is its own confirmation, so
+            // there's nothing to announce on the success path.
+            _ = try await ScreenTypingService.shared.insert(text)
+        } catch {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            viewModel.errorMessage = "Couldn't type that in (\(error.localizedDescription)) — copied it to your clipboard instead."
+        }
+    }
+
     private func setCompactBalloonVisible(_ visible: Bool) {
         // Restore normal hit testing before presenting the balloon, so its first
         // frame is already interactive. When hiding, leave it interactive until
@@ -596,7 +687,7 @@ struct ContentView: View {
                 return "What should I open for you?"
             }
         }
-        if viewModel.speech.isSpeaking, let last = viewModel.messages.last {
+        if speech.isSpeaking, let last = viewModel.messages.last {
             return ResponsePresentation.compactText(last.content)
         }
         if let last = viewModel.messages.last, last.role == .assistant {
@@ -617,10 +708,16 @@ struct ContentView: View {
                 Text("Clippy")
                     .font(.system(size: 19, weight: .bold, design: .rounded))
                     .foregroundStyle(.black)
-                Text(statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(Color.black.opacity(0.64))
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(Color.black.opacity(0.64))
+                        .lineLimit(1)
+                    if speech.isListening {
+                        ListeningWaveform(level: speech.audioLevel, barCount: 4, color: .red)
+                            .frame(width: 24, height: 14)
+                    }
+                }
 
                 HStack(spacing: 5) {
                     Circle()
@@ -695,9 +792,9 @@ struct ContentView: View {
     }
 
     private var statusMessage: String {
-        if viewModel.speech.isListening { return "I’m listening…" }
+        if speech.isListening { return "I’m listening…" }
         if viewModel.isLoading { return viewModel.activityMessage }
-        if viewModel.speech.isSpeaking { return "Here’s what I found!" }
+        if speech.isSpeaking { return "Here’s what I found!" }
         if viewModel.errorMessage != nil { return "Oops—something went wrong." }
         if viewModel.activityMessage.hasPrefix("Stopped") { return viewModel.activityMessage }
         if viewModel.recentlyCompleted { return "Done — here’s what I found." }
@@ -1000,15 +1097,34 @@ struct ContentView: View {
                         }
                     }
 
-                Button {
-                    Task { await viewModel.speech.toggleListening() }
-                } label: {
-                    Image(systemName: viewModel.speech.isListening ? "waveform.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 27))
-                        .foregroundStyle(viewModel.speech.isListening ? .red : Color.secondary)
+                if speech.isListening {
+                    ListeningWaveform(level: speech.audioLevel)
+                        .frame(width: 30, height: 27)
+                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 }
-                .buttonStyle(.plain)
-                .help(viewModel.speech.isListening ? "Stop dictation" : "Dictate")
+
+                if speech.isPreparingWhisperModel {
+                    // The one-time (or first-launch-of-a-session) local
+                    // model load can take several seconds with nothing else
+                    // on screen changing — without this the mic button just
+                    // looks unresponsive the whole time.
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 27, height: 27)
+                        .help("Loading local Whisper model…")
+                } else {
+                    Button {
+                        Task { await speech.toggleListening() }
+                    } label: {
+                        Image(systemName: speech.isListening ? "waveform.circle.fill" : "mic.circle.fill")
+                            .font(.system(size: 27))
+                            .foregroundStyle(speech.isListening ? .red : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .listeningPulse(isActive: speech.isListening)
+                    .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌥⇧ to ask Clippy")
+                    .animation(.easeOut(duration: 0.16), value: speech.isListening)
+                }
 
                 Button {
                     if viewModel.isLoading || viewModel.isRunningScreenPlan {
@@ -1408,6 +1524,11 @@ private struct ActivityBubble: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
+    // See the matching comment in OnboardingView.swift: `SpeechService` is a
+    // nested ObservableObject on ChatViewModel, not one of its `@Published`
+    // properties, so it needs its own `@ObservedObject` here to reactively
+    // reflect dictation-engine changes.
+    @ObservedObject var speech: SpeechService
     @Environment(\.dismiss) private var dismiss
     @State private var apiKey = ""
     @State private var saveError: String?
@@ -1424,6 +1545,13 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }
 
+            // Scrollable: a fixed-height VStack silently overflows past the
+            // sheet's frame instead of resizing it — the Dictation section
+            // pushed total content past 680pt and clipped the header (title
+            // + Done button) off-screen. Same root cause and fix as
+            // OnboardingView's ScrollView.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
             GroupBox("AI provider") {
                 VStack(alignment: .leading, spacing: 12) {
                     Picker("Provider", selection: $viewModel.provider) {
@@ -1486,6 +1614,34 @@ struct SettingsView: View {
                     Text("Off (recommended) waits for you to tap Run plan on anything beyond a single app switch or address-bar navigation.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                .padding(8)
+            }
+
+            GroupBox("Dictation") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: Binding(
+                        get: { speech.useLocalWhisper },
+                        set: { newValue in
+                            speech.useLocalWhisper = newValue
+                            if newValue { Task { await speech.prepareWhisperModel() } }
+                        }
+                    )) {
+                        Text("Use local Whisper dictation")
+                    }
+                    Text("More accurate, fully offline dictation inspired by OpenWhispr — your voice never leaves this Mac. Off uses Apple's built-in Speech framework instead. First use downloads a one-time local model (about 150 MB).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if speech.isPreparingWhisperModel {
+                        ProgressView(value: speech.whisperModelDownloadProgress)
+                        Text("Downloading model…")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else if speech.useLocalWhisper && speech.whisperModelReady {
+                        Label("Model ready", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.green)
+                    }
                 }
                 .padding(8)
             }
@@ -1558,6 +1714,9 @@ struct SettingsView: View {
             Text("Subscription modes use the locally installed CLI and its existing login. API usage is billed by the selected provider.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
         }
         .padding(22)
         .frame(width: 560, height: 680)

@@ -92,7 +92,9 @@ Sources/
     LocalActionService.swift     Discovers local Claude Code and Codex sessions to resume.
     ClippyMacApp.swift           App entry point, window configuration, permissions bootstrap.
     ChatStore.swift              Conversation, history, and pending-plan persistence.
-    SpeechService.swift          Dictation and spoken replies.
+    SpeechService.swift          Dictation and spoken replies, including the optional local Whisper engine.
+    ListeningIndicatorView.swift Animated waveform and pulse shown while dictation is listening.
+    PushToTalkMonitor.swift      Hold-⌘⌥ push-to-talk chord tracking.
     OnboardingView.swift         First-run permissions primer.
     PermissionsModel.swift       Live Accessibility and Screen Recording permission state.
     ClippySpriteView.swift       Sprite-sheet animation and the floating character's on-screen look.
@@ -178,7 +180,23 @@ user's macOS Keychain.
 
 ## Other features
 
-- Spoken replies and microphone dictation
+- Spoken replies and microphone dictation, with an optional local Whisper
+  engine (inspired by [OpenWhispr](https://github.com/OpenWhispr/openwhispr))
+  for more accurate, fully offline transcription — off by default, offered
+  once at first launch and toggleable any time in Settings
+- **Push-to-talk dictation — hold a chord to speak, release to stop.** Two
+  destinations:
+  - **Hold ⌘⌥** to type into whatever editable field you had focused. If
+    there's nowhere safe to put it — no editable target, or a password
+    field, which is always refused — it lands on your clipboard instead and
+    Clippy says so. Held while Clippy itself is frontmost, it fills Clippy's
+    composer rather than another app.
+  - **Hold ⌥⇧** to send what you said to Clippy as a chat message.
+
+  Both work from any app (needs Accessibility; otherwise only while Clippy
+  is frontmost). Pressing any key mid-hold cancels the recording, so the
+  chords stay usable as ordinary typing modifiers. Edit ▸ Toggle Dictation
+  is the hands-free alternative.
 - Classic Office-style balloon above the floating character, with an expandable full chat window
 - Live provider-aware work stages, elapsed time, and accessible status announcements
 - Compact action center for opening trusted apps and common folders

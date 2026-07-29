@@ -174,7 +174,7 @@ struct ClippyMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(speech: viewModel.speech)
                 .environmentObject(viewModel)
         }
         .windowStyle(.hiddenTitleBar)
@@ -191,6 +191,16 @@ struct ClippyMacApp: App {
                     viewModel.showSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+            // Dictation's primary gesture is hold-⌘⌥ push-to-talk (see
+            // PushToTalkMonitor), which can't be expressed as a
+            // `.keyboardShortcut`. This menu item stays as the click-to-toggle
+            // alternative — useful when holding a chord through a long
+            // dictation isn't practical.
+            CommandGroup(after: .textEditing) {
+                Button("Toggle Dictation") {
+                    Task { await viewModel.speech.toggleListening() }
+                }
             }
         }
     }

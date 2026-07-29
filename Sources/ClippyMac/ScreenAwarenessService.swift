@@ -431,6 +431,23 @@ final class ScreenAwarenessService {
                 throw ScreenAwarenessError.restrictedApp(trimmed)
             }
             running.activate(options: [.activateAllWindows])
+            // `NSRunningApplication.activate` is unreliable when the caller
+            // isn't frontmost: recent macOS refuses focus transfers requested
+            // by a background app, and refuses them *silently*. That is how a
+            // "switch to <app>" step reported success while nothing moved —
+            // waitUntilReady's fallback only checks that a window exists, not
+            // that the app actually came forward. Re-opening the bundle is the
+            // supported way to raise an already-running app, so fall back to
+            // it whenever the direct activation didn't take.
+            try? await Task.sleep(for: .milliseconds(150))
+            if !running.isActive, let bundleURL = running.bundleURL {
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                _ = try? await NSWorkspace.shared.openApplication(
+                    at: bundleURL,
+                    configuration: configuration
+                )
+            }
             lastExternalApplication = running
             try await waitUntilReady(running)
             return

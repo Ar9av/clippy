@@ -59,7 +59,12 @@ echo "Signing with: $SIGN_IDENTITY"
 # ScreenTypingService.performPasteWithSystemEvents sends System Events Apple
 # Events to paste generated text, and under the hardened runtime
 # (--options runtime below) that requires this entitlement or the request is
-# silently denied. Keep the entitlements plist itself comment-free: AMFI's
+# silently denied. It also grants com.apple.security.device.audio-input, which
+# the hardened runtime likewise requires for dictation: without it
+# AVCaptureDevice.requestAccess(for: .audio) is refused outright, with no
+# system prompt and no entry under Privacy & Security > Microphone, so
+# dictation just reports "Microphone permission is required" forever.
+# Keep the entitlements plist itself comment-free: AMFI's
 # entitlements parser (unlike a general plist parser) rejects XML comments.
 codesign --force --options runtime --entitlements "$SCRIPT_DIR/Clippy.entitlements" --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --strict --verbose=2 "$APP_DIR"

@@ -11,6 +11,11 @@ let package = Package(
         .executable(name: "Clippy", targets: ["ClippyMac"]),
         .executable(name: "clippy-eval", targets: ["ClippyEval"])
     ],
+    dependencies: [
+        // Local on-device transcription for dictation, used as an optional
+        // alternative to Apple's Speech framework (see SpeechService.swift).
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0")
+    ],
     targets: [
         .target(
             name: "ClippyCore",
@@ -18,7 +23,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "ClippyMac",
-            dependencies: ["ClippyCore"],
+            dependencies: [
+                "ClippyCore",
+                .product(name: "WhisperKit", package: "argmax-oss-swift")
+            ],
             path: "Sources/ClippyMac",
             resources: [
                 .copy("Resources/ClippySprites.png"),
