@@ -29,6 +29,13 @@ public protocol ScreenStepPerforming: AnyObject {
     /// need this get a default that falls back to the label-based type.
     func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws
     func press(_ key: ScreenPlanKey) async throws
+    /// Scrolls the content under `point` (the captured window's centre when
+    /// `nil`) by `ticks` wheel notches. Purely a viewport change — it commits
+    /// nothing and destroys nothing, which is why it carries none of the
+    /// final-action gating the click and type paths do. Conformers that don't
+    /// need it get a default that does nothing, so a test double or a
+    /// non-scrolling performer stays source-compatible.
+    func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws
     func idle(_ seconds: Double) async throws
     /// Visually points out a control without clicking it — used by
     /// `ScreenAgent`'s `highlight_control` tool. Returns the resolved
@@ -54,6 +61,8 @@ extension ScreenStepPerforming {
     public func highlight(_ label: String) async throws -> String {
         label
     }
+
+    public func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {}
 }
 
 public enum ScreenPlanError: LocalizedError, Equatable {
@@ -92,6 +101,12 @@ public enum ScreenPlanError: LocalizedError, Equatable {
 public final class ScreenPlanRunner {
     nonisolated public static let stepLimit = 10
     nonisolated public static let waitRange: ClosedRange<Double> = 0.1...8.0
+    /// Bounded so a single step can't scroll a document to its end and lose
+    /// the user's place. Several small scrolls with a fresh screenshot
+    /// between them is also what makes the agent loop able to *find* things:
+    /// one giant jump skips past the target without ever observing it.
+    nonisolated public static let scrollTickRange: ClosedRange<Double> = 1...15
+    nonisolated public static let defaultScrollTicks: Double = 5
 
     public struct Progress: Equatable {
         public let index: Int
@@ -167,6 +182,21 @@ public final class ScreenPlanRunner {
                 }
             case .key:
                 guard step.key != nil else { throw ScreenPlanError.malformedStep(index) }
+            case .scroll:
+                guard step.direction != nil else { throw ScreenPlanError.malformedStep(index) }
+                if let amount = step.amount, !amount.isFinite || amount <= 0 {
+                    throw ScreenPlanError.malformedStep(index)
+                }
+                // An out-of-window scroll point would send the wheel event to
+                // whatever else happens to be under it, so it gets the same
+                // bounds check a click does.
+                try Self.validatePoint(
+                    step,
+                    target: step.target ?? "the content",
+                    index: index,
+                    bounds: bounds,
+                    scale: scale
+                )
             case .wait:
                 guard waitRange.contains(step.seconds ?? 0.8) else {
                     throw ScreenPlanError.malformedStep(index)
@@ -268,6 +298,12 @@ public final class ScreenPlanRunner {
         case .key:
             guard let key = step.key else { throw ScreenPlanError.malformedStep(0) }
             try await performer.press(key)
+        case .scroll:
+            guard let direction = step.direction else { throw ScreenPlanError.malformedStep(0) }
+            let requested = step.amount ?? Self.defaultScrollTicks
+            let ticks = min(max(requested, Self.scrollTickRange.lowerBound), Self.scrollTickRange.upperBound)
+            let point = (step.x.flatMap { x in step.y.map { CGPoint(x: x, y: $0) } })
+            try await performer.scroll(direction, ticks: Int(ticks.rounded()), at: point)
         case .wait:
             // validate() already rejects any step whose seconds falls
             // outside waitRange, and run() always validates before this is

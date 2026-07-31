@@ -29,6 +29,44 @@ final class ClippyToolsTests: XCTestCase {
         XCTAssertEqual(plan.steps[1].seconds, 0.8)
     }
 
+    func testDecodesAScrollStep() {
+        let input = JSONValue.object([
+            "summary": .string("Look further down the page"),
+            "steps": .array([
+                .object([
+                    "action": .string("scroll"),
+                    "direction": .string("down"),
+                    "amount": .number(4),
+                    "x": .number(500),
+                    "y": .number(400)
+                ])
+            ])
+        ])
+        guard case .screenAction(let plan)? = ClippyTools.call(from: response(name: "screen_action", input: input)) else {
+            return XCTFail("expected .screenAction")
+        }
+        XCTAssertEqual(plan.steps.first?.action, .scroll)
+        XCTAssertEqual(plan.steps.first?.direction, .down)
+        XCTAssertEqual(plan.steps.first?.amount, 4)
+        XCTAssertEqual(plan.steps.first?.x, 500)
+    }
+
+    /// An unrecognised direction must not silently become a default one — the
+    /// step is rejected by validation instead of scrolling some other way.
+    func testDropsAnUnknownScrollDirection() {
+        let input = JSONValue.object([
+            "summary": .string("s"),
+            "steps": .array([
+                .object(["action": .string("scroll"), "direction": .string("sideways")])
+            ])
+        ])
+        guard case .screenAction(let plan)? = ClippyTools.call(from: response(name: "screen_action", input: input)) else {
+            return XCTFail("expected .screenAction")
+        }
+        XCTAssertNil(plan.steps.first?.direction)
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan))
+    }
+
     func testDecodesScreenActionStepWithCoordinatesAndKey() {
         let input = JSONValue.object([
             "summary": .string("s"),

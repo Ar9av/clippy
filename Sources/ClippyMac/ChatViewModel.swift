@@ -345,7 +345,9 @@ final class ChatViewModel: ObservableObject {
                 if shouldInspectScreen {
                     activityMessage = "Looking at the current screen…"
                     let context = try await ScreenAwarenessService.shared.captureContext()
-                    effectiveAttachments.append(context.screenshotURL)
+                    // Every display, not just the active one — a request about
+                    // "the other screen" needs the other screen attached.
+                    effectiveAttachments.append(contentsOf: context.screenshotURLs)
                     effectiveAttachments.append(context.contextURL)
                     capturedScreen = context
                     screenStatus = "Looking at \(context.appName) · \(context.windowTitle)"
@@ -792,7 +794,9 @@ final class ChatViewModel: ObservableObject {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func requestsScreenReply(_ request: String) -> Bool {
+    /// Internal rather than private so the routing it drives is testable
+    /// directly, the same way `ScreenAwarenessService.matchScore` is.
+    static func requestsScreenReply(_ request: String) -> Bool {
         let normalized = request.lowercased()
         let replyVerb = ["reply", "respond", "answer", "write back"].contains {
             normalized.contains($0)
@@ -885,6 +889,11 @@ final class ChatViewModel: ObservableObject {
             return true
         case .type:
             return step.pressReturnAfter == true
+        case .scroll:
+            // Scrolling changes nothing but the viewport, and asking the user
+            // to confirm "scroll down a bit" defeats the point of the agent
+            // being able to look further down a page on its own.
+            return true
         case .click, .wait, .key:
             return false
         }
@@ -929,6 +938,14 @@ final class ChatViewModel: ObservableObject {
     /// finished. Screenshotting and asking a third time won't fix that;
     /// stopping and surfacing it beats silently looping to the step cap.
     private static let maxConsecutiveRepeats = 2
+
+    /// Scrolling is the exception: reaching something far down a page takes
+    /// several identical scrolls in a row, and each one genuinely changes
+    /// what the next observation sees. Under the ordinary limit the loop
+    /// would stop two scrolls in — barely past the fold — and report a stall
+    /// that never happened. Still bounded, so scrolling forever at the end of
+    /// a document stops.
+    private static let maxConsecutiveScrolls = 5
 
     private func executeScreenPlan(_ plan: PendingScreenPlan) async {
         isRunningScreenPlan = true
@@ -1023,7 +1040,10 @@ final class ChatViewModel: ObservableObject {
                 } else {
                     consecutiveRepeats = 0
                 }
-                if consecutiveRepeats >= Self.maxConsecutiveRepeats {
+                let repeatLimit = proposed.action == .scroll
+                    ? Self.maxConsecutiveScrolls
+                    : Self.maxConsecutiveRepeats
+                if consecutiveRepeats >= repeatLimit {
                     stalledOnRepeat = true
                     break stepLoop
                 }
@@ -1103,7 +1123,7 @@ final class ChatViewModel: ObservableObject {
     /// not exact coordinates.
     private static func isEquivalentAction(_ a: ScreenPlanStep, _ b: ScreenPlanStep) -> Bool {
         a.action == b.action && a.target == b.target && a.text == b.text
-            && a.app == b.app && a.key == b.key
+            && a.app == b.app && a.key == b.key && a.direction == b.direction
     }
 
     /// Posts a permanent, readable record of what actually ran to the chat
@@ -1168,7 +1188,7 @@ final class ChatViewModel: ObservableObject {
                 messages: messages + [followUp],
                 model: model,
                 apiKey: KeychainStore.read(account: provider.rawValue),
-                attachments: [context.screenshotURL, context.contextURL],
+                attachments: context.screenshotURLs + [context.contextURL],
                 presentation: .screenPlanStep
             )
         } catch {

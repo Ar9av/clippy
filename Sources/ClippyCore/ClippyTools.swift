@@ -13,9 +13,11 @@ public enum ClippyTools {
         name: "screen_action",
         description: """
         Propose a sequence of screen actions (open an app, click a control, type text, \
-        press a navigation key, or wait) to accomplish the user's request. Every target must \
+        press a navigation key, scroll, or wait) to accomplish the user's request. Every target must \
         exactly match a label in the supplied "Visible actionable controls" list, or supply x/y \
-        coordinates in that same point space when a label match would be unreliable. Never \
+        coordinates in that same point space when a label match would be unreliable. The control \
+        list only ever describes what is currently on screen — if what you need isn't in it, scroll \
+        toward it and look again rather than concluding it doesn't exist. Never \
         include a step that sends, submits, publishes, purchases, deletes, accepts terms, or \
         enters a password — call cannot_proceed instead if the goal requires one of those as \
         the very next step.
@@ -29,7 +31,7 @@ public enum ClippyTools {
                     "items": .object([
                         "type": .string("object"),
                         "properties": .object([
-                            "action": .object(["type": .string("string"), "enum": .array([.string("open"), .string("click"), .string("type"), .string("wait"), .string("key")])]),
+                            "action": .object(["type": .string("string"), "enum": .array([.string("open"), .string("click"), .string("type"), .string("wait"), .string("key"), .string("scroll")])]),
                             "target": .object(["type": .string("string")]),
                             "text": .object(["type": .string("string")]),
                             "app": .object(["type": .string("string")]),
@@ -37,7 +39,16 @@ public enum ClippyTools {
                             "seconds": .object(["type": .string("number")]),
                             "x": .object(["type": .string("number")]),
                             "y": .object(["type": .string("number")]),
-                            "pressReturnAfter": .object(["type": .string("boolean")])
+                            "pressReturnAfter": .object(["type": .string("boolean")]),
+                            "direction": .object([
+                                "type": .string("string"),
+                                "enum": .array([.string("up"), .string("down"), .string("left"), .string("right")]),
+                                "description": .string("scroll only — which way the content moves. \"down\" reveals what is below the fold.")
+                            ]),
+                            "amount": .object([
+                                "type": .string("number"),
+                                "description": .string("scroll only — wheel ticks, 1 to 15. Defaults to 5. Prefer a few small scrolls with a fresh look between them over one large jump.")
+                            ])
                         ]),
                         "required": .array([.string("action")])
                     ])
@@ -163,6 +174,7 @@ public enum ClippyTools {
             return nil
         }
         let key = string("key").flatMap(ScreenPlanKey.init)
+        let direction = string("direction").flatMap(ScreenScrollDirection.init)
         return ScreenPlanStep(
             action: action,
             target: string("target"),
@@ -172,7 +184,9 @@ public enum ClippyTools {
             key: key,
             x: number("x"),
             y: number("y"),
-            pressReturnAfter: boolean("pressReturnAfter")
+            pressReturnAfter: boolean("pressReturnAfter"),
+            direction: direction,
+            amount: number("amount")
         )
     }
 }

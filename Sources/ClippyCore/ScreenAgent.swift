@@ -50,6 +50,13 @@ public final class ScreenAgent {
         public var stepLimit: Int
         public var maxConsecutiveFailures: Int
         public var maxConsecutiveRepeats: Int
+        /// Scrolling is the one action that is *supposed* to repeat: reaching
+        /// something far down a page takes several identical steps in a row,
+        /// and each one legitimately changes what the next observation sees.
+        /// Under the ordinary repeat limit the agent would give up two
+        /// scrolls in, which is barely past the fold. Still bounded, so a
+        /// model scrolling forever at the end of a document stops.
+        public var maxConsecutiveScrolls: Int
         public var model: String
         public var settleMilliseconds: @Sendable (ScreenPlanStep) -> UInt64
 
@@ -57,6 +64,7 @@ public final class ScreenAgent {
             stepLimit: Int = ScreenPlanRunner.stepLimit,
             maxConsecutiveFailures: Int = 3,
             maxConsecutiveRepeats: Int = 2,
+            maxConsecutiveScrolls: Int = 5,
             model: String = AnthropicClient.defaultModel,
             settleMilliseconds: @escaping @Sendable (ScreenPlanStep) -> UInt64 = { step in
                 (step.action == .type && step.pressReturnAfter == true) ? 1400 : 500
@@ -65,6 +73,7 @@ public final class ScreenAgent {
             self.stepLimit = stepLimit
             self.maxConsecutiveFailures = maxConsecutiveFailures
             self.maxConsecutiveRepeats = maxConsecutiveRepeats
+            self.maxConsecutiveScrolls = maxConsecutiveScrolls
             self.model = model
             self.settleMilliseconds = settleMilliseconds
         }
@@ -169,8 +178,13 @@ public final class ScreenAgent {
             if consecutiveFailures >= config.maxConsecutiveFailures {
                 return .stuck(reason: "Stopped after \(consecutiveFailures) failed attempts in a row.")
             }
-            if consecutiveRepeats >= config.maxConsecutiveRepeats {
-                return .stuck(reason: "Kept proposing the same step without anything changing.")
+            let repeatLimit = lastStep?.action == .scroll
+                ? config.maxConsecutiveScrolls
+                : config.maxConsecutiveRepeats
+            if consecutiveRepeats >= repeatLimit {
+                return .stuck(reason: lastStep?.action == .scroll
+                    ? "Scrolled \(consecutiveRepeats + 1) times without finding what this needed."
+                    : "Kept proposing the same step without anything changing.")
             }
         }
         return .stepLimit(executedCount: executedCount)
@@ -239,7 +253,9 @@ public final class ScreenAgent {
         toolUseId: String? = nil
     ) async throws -> CompletionMessage {
         let context = try await observer.captureContext()
-        let base64 = try screenshots.loadBase64PNG(at: context.screenshotURL)
+        // One image per display, anchor first. The context text names them in
+        // this same order, so the model can tell which screen it is looking at.
+        let base64Images = try context.screenshotURLs.map(screenshots.loadBase64PNG)
         let contextText = try String(contentsOf: context.contextURL, encoding: .utf8)
 
         var blocks: [CompletionContentBlock] = []
@@ -254,7 +270,9 @@ public final class ScreenAgent {
         } else if let goal {
             blocks.append(.text("Goal: \(goal)\n\n\(contextText)"))
         }
-        blocks.append(.image(mediaType: "image/png", base64: base64))
+        for base64 in base64Images {
+            blocks.append(.image(mediaType: "image/png", base64: base64))
+        }
         return CompletionMessage(role: .user, content: blocks)
     }
 
@@ -263,9 +281,12 @@ public final class ScreenAgent {
     }
 
     /// Ignores pixel-level x/y jitter — a model nudging coordinates to
-    /// correct itself is still progress, not a repeat.
+    /// correct itself is still progress, not a repeat. `amount` is ignored on
+    /// the same reasoning (scrolling a bit further is the same action again),
+    /// but `direction` is not: reversing is a genuine change of intent.
     static func isEquivalentAction(_ a: ScreenPlanStep, _ b: ScreenPlanStep) -> Bool {
-        a.action == b.action && a.target == b.target && a.text == b.text && a.app == b.app && a.key == b.key
+        a.action == b.action && a.target == b.target && a.text == b.text && a.app == b.app
+            && a.key == b.key && a.direction == b.direction
     }
 }
 

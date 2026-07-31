@@ -41,25 +41,45 @@ final class MockObserver: ScreenObserving {
     private(set) var captureCount = 0
     let contextURL: URL
     let screenshotURL: URL
+    let secondScreenshotURL: URL
+    /// How many displays each capture reports. One by default; set to 2 to
+    /// exercise a multi-monitor observation.
+    var displayCount = 1
 
     init() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ScreenAgentTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         contextURL = directory.appendingPathComponent("context.txt")
         screenshotURL = directory.appendingPathComponent("screenshot.png")
+        secondScreenshotURL = directory.appendingPathComponent("screenshot-2.png")
         try? "Visible actionable controls:\n- Button: \"OK\" at (10, 10)".write(to: contextURL, atomically: true, encoding: .utf8)
         try? Data([0x89, 0x50, 0x4E, 0x47]).write(to: screenshotURL)
+        try? Data([0x89, 0x50, 0x4E, 0x47]).write(to: secondScreenshotURL)
     }
 
     func captureContext() async throws -> ScreenContext {
         captureCount += 1
+        let anchorFrame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        var shots = [DisplayShot(
+            name: "Built-in", url: screenshotURL, frame: anchorFrame, scale: 2, isAnchor: true
+        )]
+        if displayCount > 1 {
+            // Tiled to the right of the anchor, as macOS lays displays out.
+            shots.append(DisplayShot(
+                name: "External",
+                url: secondScreenshotURL,
+                frame: CGRect(x: 800, y: 0, width: 1000, height: 700),
+                scale: 1.5,
+                isAnchor: false
+            ))
+        }
         return ScreenContext(
             appName: "TestApp",
             windowTitle: "Test Window",
-            screenshotURL: screenshotURL,
             contextURL: contextURL,
             elements: [],
-            windowFrame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            displayShots: shots,
+            windowFrame: anchorFrame,
             screenshotScale: 2
         )
     }
@@ -91,6 +111,13 @@ final class AgentRecordingPerformer: ScreenStepPerforming {
     }
 
     func press(_ key: ScreenPlanKey) async throws { performedSteps.append(ScreenPlanStep(action: .key, key: key)) }
+
+    func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {
+        performedSteps.append(
+            ScreenPlanStep(action: .scroll, direction: direction, amount: Double(ticks))
+        )
+    }
+
     func idle(_ seconds: Double) async throws {}
 }
 
@@ -154,6 +181,123 @@ final class ScreenAgentTests: XCTestCase {
 
         let outcome = await agent.run(goal: "keep clicking")
         XCTAssertEqual(outcome, .stepLimit(executedCount: ScreenPlanRunner.stepLimit))
+    }
+
+    // MARK: - Multi-display observation
+
+    private func imageCount(in message: CompletionMessage) -> Int {
+        message.content.filter { if case .image = $0 { return true } else { return false } }.count
+    }
+
+    /// Every attached display reaches the model on every observation — the
+    /// point of capturing them is that the model actually sees them.
+    func testEveryDisplayIsSentOnEveryObservation() async {
+        let provider = MockProvider(responses: [
+            toolUseResponse(name: "screen_action", input: .object([
+                "summary": .string("Click OK"),
+                "steps": .array([.object(["action": .string("click"), "target": .string("OK")])])
+            ])),
+            toolUseResponse(name: "task_complete", input: .object(["summary": .string("Done.")]))
+        ])
+        let observer = MockObserver()
+        observer.displayCount = 2
+        let agent = ScreenAgent(provider: provider, performer: AgentRecordingPerformer(), observer: observer, screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        _ = await agent.run(goal: "click OK")
+
+        // Both the opening turn and the post-step turn carry one image per
+        // display, not just the active one.
+        let userTurns = provider.receivedRequests.flatMap { $0.messages }.filter { $0.role == .user }
+        XCTAssertFalse(userTurns.isEmpty)
+        for turn in userTurns {
+            XCTAssertEqual(imageCount(in: turn), 2, "expected one image per display")
+        }
+    }
+
+    func testASingleDisplaySendsOneImage() async {
+        let provider = MockProvider(responses: [
+            toolUseResponse(name: "task_complete", input: .object(["summary": .string("Done.")]))
+        ])
+        let observer = MockObserver() // displayCount defaults to 1
+        let agent = ScreenAgent(provider: provider, performer: AgentRecordingPerformer(), observer: observer, screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        _ = await agent.run(goal: "look")
+
+        let userTurns = provider.receivedRequests.flatMap { $0.messages }.filter { $0.role == .user }
+        XCTAssertFalse(userTurns.isEmpty)
+        for turn in userTurns {
+            XCTAssertEqual(imageCount(in: turn), 1)
+        }
+    }
+
+    // MARK: - Scrolling
+
+    private func scrollResponse(_ direction: String) -> CompletionResponse {
+        toolUseResponse(name: "screen_action", input: .object([
+            "summary": .string("Scroll \(direction)"),
+            "steps": .array([.object(["action": .string("scroll"), "direction": .string(direction)])])
+        ]))
+    }
+
+    /// Reaching something far down a page takes several identical scrolls in
+    /// a row. Under the ordinary repeat limit the agent gave up after two —
+    /// barely past the fold — and reported a stall that hadn't happened.
+    func testConsecutiveScrollsAreNotMistakenForAStall() async {
+        let provider = MockProvider(responses: [
+            scrollResponse("down"),
+            scrollResponse("down"),
+            scrollResponse("down"),
+            scrollResponse("down"),
+            toolUseResponse(name: "task_complete", input: .object(["summary": .string("Found it.")]))
+        ])
+        let performer = AgentRecordingPerformer()
+        let agent = ScreenAgent(provider: provider, performer: performer, observer: MockObserver(), screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        let outcome = await agent.run(goal: "find the setting further down")
+        XCTAssertEqual(outcome, .completed(summary: "Found it."))
+        XCTAssertEqual(performer.performedSteps.count, 4)
+    }
+
+    /// Bounded, though — a model scrolling forever at the end of a document
+    /// still has to stop.
+    func testEndlessScrollingEventuallyStops() async {
+        let provider = MockProvider(responses: (0..<12).map { _ in scrollResponse("down") })
+        let agent = ScreenAgent(provider: provider, performer: AgentRecordingPerformer(), observer: MockObserver(), screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        guard case .stuck(let reason) = await agent.run(goal: "scroll forever") else {
+            return XCTFail("expected .stuck")
+        }
+        XCTAssertTrue(reason.lowercased().contains("scroll"), reason)
+    }
+
+    /// Reversing direction is a change of intent, not the same step again.
+    func testReversingScrollDirectionResetsTheRepeatCount() async {
+        let provider = MockProvider(responses: [
+            scrollResponse("down"),
+            scrollResponse("up"),
+            scrollResponse("down"),
+            scrollResponse("up"),
+            toolUseResponse(name: "task_complete", input: .object(["summary": .string("Done.")]))
+        ])
+        let agent = ScreenAgent(provider: provider, performer: AgentRecordingPerformer(), observer: MockObserver(), screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        let outcome = await agent.run(goal: "look around")
+        XCTAssertEqual(outcome, .completed(summary: "Done."))
+    }
+
+    func testRepeatDetectionStillCatchesANonScrollLoop() async {
+        let provider = MockProvider(responses: (0..<6).map { _ in
+            toolUseResponse(name: "screen_action", input: .object([
+                "summary": .string("Click OK"),
+                "steps": .array([.object(["action": .string("click"), "target": .string("OK")])])
+            ]))
+        })
+        let agent = ScreenAgent(provider: provider, performer: AgentRecordingPerformer(), observer: MockObserver(), screenshots: MockScreenshotLoader(), config: fastConfig())
+
+        guard case .stuck(let reason) = await agent.run(goal: "click OK") else {
+            return XCTFail("expected .stuck")
+        }
+        XCTAssertTrue(reason.contains("same step"), reason)
     }
 
     func testCannotProceedReportsStuckWithReason() async {

@@ -100,9 +100,114 @@ final class AnthropicClientTests: XCTestCase {
         XCTAssertEqual(response.usage, CompletionUsage(inputTokens: 10, outputTokens: 5))
 
         let body = jsonBody()
-        XCTAssertEqual(body["system"] as? String, "You are Clippy.")
+        // The system prompt goes as a block array, not a bare string, so it can
+        // carry a cache breakpoint.
+        let system = try XCTUnwrap(body["system"] as? [[String: Any]])
+        XCTAssertEqual(system.first?["text"] as? String, "You are Clippy.")
         XCTAssertEqual((body["tools"] as? [[String: Any]])?.count, 1)
         XCTAssertNil(body["stream"])
+    }
+
+    // MARK: - Prompt caching
+
+    private func lastContentBlock(of body: [String: Any]) throws -> [String: Any] {
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages.last?["content"] as? [[String: Any]])
+        return try XCTUnwrap(content.last)
+    }
+
+    private func stubEmptyReply() throws {
+        MockURLProtocol.stub = MockURLProtocol.Stub(
+            status: 200,
+            headers: [:],
+            body: try JSONSerialization.data(withJSONObject: [
+                "content": [["type": "text", "text": "ok"]],
+                "stop_reason": "end_turn"
+            ])
+        )
+    }
+
+    /// Caching is a prefix match, so the breakpoint has to sit on the very last
+    /// block — anything after it is outside the cached region on the next
+    /// request, and in the agent loop that would be the newest screenshot and
+    /// accessibility dump, which is most of what repeats.
+    func testBreakpointIsOnTheFinalContentBlock() async throws {
+        try stubEmptyReply()
+        let client = AnthropicClient(apiKey: "k", session: MockURLProtocol.makeSession())
+        _ = try await client.complete(CompletionRequest(
+            system: "sys",
+            messages: [
+                .text(.user, "first"),
+                CompletionMessage(role: .user, content: [
+                    .text("second"),
+                    .image(mediaType: "image/png", base64: "AAAA")
+                ])
+            ],
+            model: "m"
+        ))
+
+        let body = jsonBody()
+        let final = try lastContentBlock(of: body)
+        XCTAssertEqual(final["type"] as? String, "image")
+        XCTAssertEqual(final["cache_control"] as? [String: String], ["type": "ephemeral"])
+
+        // Only the final block carries one — earlier blocks must not, or each
+        // request would burn breakpoints on prefixes it never reads back.
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let firstContent = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
+        XCTAssertNil(firstContent.first?["cache_control"])
+    }
+
+    func testSystemPromptCarriesABreakpoint() async throws {
+        try stubEmptyReply()
+        let client = AnthropicClient(apiKey: "k", session: MockURLProtocol.makeSession())
+        _ = try await client.complete(
+            CompletionRequest(system: "sys", messages: [.text(.user, "hi")], model: "m")
+        )
+
+        let system = try XCTUnwrap(jsonBody()["system"] as? [[String: Any]])
+        XCTAssertEqual(system.count, 1)
+        XCTAssertEqual(system.first?["cache_control"] as? [String: String], ["type": "ephemeral"])
+    }
+
+    /// The cache key is the literal bytes of the rendered prefix, and Foundation
+    /// makes no ordering promise for a dictionary — an unstable key order would
+    /// mean a prefix that never changed still missed.
+    func testIdenticalRequestsSerializeToIdenticalBytes() async throws {
+        func bodyBytes() async throws -> Data {
+            try stubEmptyReply()
+            let client = AnthropicClient(apiKey: "k", session: MockURLProtocol.makeSession())
+            _ = try await client.complete(CompletionRequest(
+                system: "sys",
+                messages: [.text(.user, "hi")],
+                tools: [ToolDefinition(
+                    name: "t",
+                    description: "d",
+                    inputSchema: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "zeta": .object(["type": .string("string")]),
+                            "alpha": .object(["type": .string("number")]),
+                            "mid": .object(["type": .string("boolean")])
+                        ])
+                    ])
+                )],
+                model: "m"
+            ))
+            return try XCTUnwrap(MockURLProtocol.capturedRequestBody)
+        }
+
+        let first = try await bodyBytes()
+        let second = try await bodyBytes()
+        XCTAssertEqual(first, second)
+    }
+
+    /// A request with no messages must not crash reaching for a block to mark.
+    func testEmptyMessageListIsHandled() async throws {
+        try stubEmptyReply()
+        let client = AnthropicClient(apiKey: "k", session: MockURLProtocol.makeSession())
+        _ = try await client.complete(CompletionRequest(system: "sys", messages: [], model: "m"))
+        XCTAssertEqual((jsonBody()["messages"] as? [[String: Any]])?.count, 0)
     }
 
     func testCompleteParsesToolUseBlock() async throws {

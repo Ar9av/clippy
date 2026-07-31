@@ -49,6 +49,19 @@ final class ResolveScoringTests: XCTestCase {
         XCTAssertGreaterThan(substringMatch, sharedWordOnly)
     }
 
+    /// The scan keeps structural elements that merely answer to a press, so a
+    /// pressable label can now compete with the real control of the same name.
+    /// The real one has to win.
+    func testPrefersARealControlOverASameNamedPressableLabel() {
+        let button = score(query: "save", label: "Save", role: "Button")
+        let staticText = score(query: "save", label: "Save", role: "StaticText")
+        XCTAssertGreaterThan(button, staticText)
+    }
+
+    func testRoleBiasNeverPromotesANonMatchingControl() {
+        XCTAssertEqual(score(query: "save", label: "Cancel", role: "Button"), 0)
+    }
+
     func testAmbiguousTiesAreDetectableByEqualScores() {
         // Two differently-labelled controls that happen to score identically
         // — resolve() itself just takes the first max() found today (no

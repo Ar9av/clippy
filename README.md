@@ -44,9 +44,19 @@ just describe the steps back to you. It takes a screenshot, reads the
 accessibility tree of whatever's in front of you, and acts:
 
 - **Sees your screen on every request.** A fresh screenshot and an
-  accessibility scan (control labels, roles, positions) go to the model with
-  every message, so it can reason about what's actually in front of you
-  instead of guessing.
+  accessibility scan (control labels, roles, positions, and each control's
+  current state) go to the model with every message, so it can reason about
+  what's actually in front of you instead of guessing.
+- **Reads state, not just labels.** Every control reports what's already in
+  it — the text sitting in a field, whether a checkbox is on or off, what
+  currently has keyboard focus. That's what stops it retyping a search box
+  that already holds the right query, or toggling a setting that was already
+  on, and it's how it confirms a step did what it intended.
+- **Scrolls to find things.** An accessibility scan only ever describes
+  what's on screen right now, so a control below the fold looks exactly like
+  a control that doesn't exist. Clippy can scroll and look again — a few
+  ticks at a time, re-observing between them — instead of concluding the
+  target isn't there.
 - **Plans and re-plans, one step at a time.** Clippy doesn't build a
   10-step plan up front and run it blind. It runs one action, takes a new
   screenshot, and asks "given what just happened, what's next?" A screen
@@ -119,6 +129,10 @@ scripts/build-dmg.sh             Universal-binary build, code signing, and DMG p
   Enter yourself.
 - Secure and password fields are refused outright, regardless of what's
   asked.
+- Scrolling is the one action that runs without confirmation: it only
+  changes what's visible, commits nothing, and destroys nothing. It still
+  refuses to scroll a restricted app, since that's still synthetic input
+  aimed at one.
 - By default, this build's terminal and agent-CLI blocklist
   (`AutomationSafety.swift`) is **empty**: Clippy can click and type into
   Terminal, Warp, iTerm, and similar apps, on the reasoning that everything

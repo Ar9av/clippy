@@ -143,12 +143,36 @@ public enum CompletionStopReason: String, Sendable {
 }
 
 public struct CompletionUsage: Equatable, Sendable {
+    /// Tokens processed at full price — the part of the prompt that wasn't
+    /// served from cache. This is the *remainder*, not the prompt size: a
+    /// request whose prefix all came from cache reports a small number here
+    /// with the bulk counted under `cacheReadInputTokens`.
     public let inputTokens: Int
     public let outputTokens: Int
+    /// Tokens served from an existing cache entry. The signal that prompt
+    /// caching is actually working: if this stays zero across an agent run,
+    /// something is changing the prefix between requests and every round is
+    /// paying to re-ingest the whole transcript.
+    public let cacheReadInputTokens: Int
+    /// Tokens written into the cache by this request.
+    public let cacheCreationInputTokens: Int
 
-    public init(inputTokens: Int, outputTokens: Int) {
+    public init(
+        inputTokens: Int,
+        outputTokens: Int,
+        cacheReadInputTokens: Int = 0,
+        cacheCreationInputTokens: Int = 0
+    ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.cacheReadInputTokens = cacheReadInputTokens
+        self.cacheCreationInputTokens = cacheCreationInputTokens
+    }
+
+    /// The full prompt size, cached and uncached parts together — what
+    /// `inputTokens` alone looks like it means but doesn't.
+    public var totalInputTokens: Int {
+        inputTokens + cacheReadInputTokens + cacheCreationInputTokens
     }
 }
 

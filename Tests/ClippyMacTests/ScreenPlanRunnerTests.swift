@@ -9,6 +9,7 @@ final class RecordingPerformer: ScreenStepPerforming {
         case click(String)
         case type(text: String, target: String)
         case press(ScreenPlanKey)
+        case scroll(ScreenScrollDirection, ticks: Int, point: CGPoint?)
         case idle(Double)
     }
 
@@ -33,6 +34,10 @@ final class RecordingPerformer: ScreenStepPerforming {
     }
 
     func press(_ key: ScreenPlanKey) async throws { calls.append(.press(key)) }
+
+    func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {
+        calls.append(.scroll(direction, ticks: ticks, point: point))
+    }
 
     func idle(_ seconds: Double) async throws { calls.append(.idle(seconds)) }
 
@@ -250,6 +255,80 @@ final class ScreenPlanRunnerTests: XCTestCase {
     func testDoesNotValidatePointsWhenNoBoundsGiven() throws {
         try ScreenPlanRunner.validate(plan([
             ScreenPlanStep(action: .click, target: "Field", x: 99999, y: 99999)
+        ]))
+    }
+
+    // MARK: - Scroll
+
+    func testScrollDispatchesDirectionTicksAndPoint() async throws {
+        let performer = RecordingPerformer()
+        let runner = ScreenPlanRunner(performer: performer, settleSeconds: 0)
+        try await runner.run(plan([
+            ScreenPlanStep(action: .scroll, direction: .down, amount: 3),
+            ScreenPlanStep(action: .scroll, x: 300, y: 400, direction: .right, amount: 2)
+        ]))
+
+        XCTAssertEqual(performer.actions, [
+            .scroll(.down, ticks: 3, point: nil),
+            .scroll(.right, ticks: 2, point: CGPoint(x: 300, y: 400))
+        ])
+    }
+
+    func testScrollWithoutAnAmountUsesTheDefault() async throws {
+        let performer = RecordingPerformer()
+        let runner = ScreenPlanRunner(performer: performer, settleSeconds: 0)
+        try await runner.run(plan([ScreenPlanStep(action: .scroll, direction: .down)]))
+
+        XCTAssertEqual(
+            performer.actions,
+            [.scroll(.down, ticks: Int(ScreenPlanRunner.defaultScrollTicks), point: nil)]
+        )
+    }
+
+    /// A single step must not be able to fling a document to its end — the
+    /// agent loop needs to observe between scrolls to find anything.
+    func testClampsAnOversizedScrollToTheAllowedRange() async throws {
+        let performer = RecordingPerformer()
+        let runner = ScreenPlanRunner(performer: performer, settleSeconds: 0)
+        try await runner.run(plan([ScreenPlanStep(action: .scroll, direction: .down, amount: 900)]))
+
+        XCTAssertEqual(
+            performer.actions,
+            [.scroll(.down, ticks: Int(ScreenPlanRunner.scrollTickRange.upperBound), point: nil)]
+        )
+    }
+
+    func testRejectsAScrollWithNoDirection() {
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .scroll, amount: 3)
+        ]))) { error in
+            XCTAssertEqual(error as? ScreenPlanError, .malformedStep(0))
+        }
+    }
+
+    func testRejectsAScrollWithANonPositiveAmount() {
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .scroll, direction: .down, amount: 0)
+        ]))) { error in
+            XCTAssertEqual(error as? ScreenPlanError, .malformedStep(0))
+        }
+    }
+
+    /// A scroll point outside the window would send wheel events to whatever
+    /// else is under it, so it gets the same bounds check a click does.
+    func testRejectsAScrollPointOutsideTheWindowFrame() {
+        XCTAssertThrowsError(try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .scroll, x: 5000, y: 5000, direction: .down)
+        ]), bounds: windowFrame)) { error in
+            XCTAssertEqual(error as? ScreenPlanError, .outOfBounds(0, "the content"))
+        }
+    }
+
+    /// Scrolling only changes what is visible. It must never be caught by the
+    /// final-action refusal, even when the surrounding view is named for one.
+    func testScrollIsNotTreatedAsAFinalAction() throws {
+        try ScreenPlanRunner.validate(plan([
+            ScreenPlanStep(action: .scroll, target: "Send message list", direction: .down)
         ]))
     }
 }

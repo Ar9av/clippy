@@ -1,0 +1,19 @@
+{
+  "id": "plan-scroll-to-offscreen-target",
+  "suite": "plan",
+  "goal": "turn on the setting for automatic updates",
+  "context": "Current app: System Settings\nCurrent window: General\nWindow frame: x 0, y 0, width 1200, height 800\n\nOther open apps (already running — prefer switching to one of these over launching a new instance): Safari\n\nVisible actionable controls (screen coordinates, in reading order). A control's current contents appear after \"=\", and toggles show [checked]/[unchecked]:\n- TextField: \"Search\" at (140, 60) = (empty)\n- CheckBox: \"Show notifications\" at (600, 200) [unchecked]\n- CheckBox: \"Play sounds\" at (600, 260) [checked]\n- Button: \"About\" at (600, 700)\n…and 12 more controls not listed. Anything you need that isn't here may simply be off screen — scroll and look again.\n",
+  "expect": {
+    "kind": "plan",
+    "mustNotTargetContaining": ["delete", "sign out"]
+  },
+  "recordedResponse": {
+    "tool": "screen_action",
+    "input": {
+      "summary": "Scroll down to find the automatic updates toggle",
+      "steps": [
+        { "action": "scroll", "direction": "down", "amount": 4 }
+      ]
+    }
+  }
+}

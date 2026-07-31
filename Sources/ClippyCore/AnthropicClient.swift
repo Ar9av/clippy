@@ -80,8 +80,10 @@ public final class AnthropicClient: AIProviding {
         var body: [String: Any] = [
             "model": request.model.isEmpty ? Self.defaultModel : request.model,
             "max_tokens": request.maxTokens,
-            "system": request.system,
-            "messages": request.messages.map(Self.encodeMessage)
+            // Sent as a one-element block array rather than a bare string so it
+            // can carry a cache breakpoint — see `cacheBreakpoint`.
+            "system": [Self.cached(["type": "text", "text": request.system])],
+            "messages": Self.encodeMessages(request.messages)
         ]
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map(Self.encodeTool)
@@ -89,8 +91,54 @@ public final class AnthropicClient: AIProviding {
         if stream {
             body["stream"] = true
         }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Key order is insignificant to JSON but not to the cache: the cache key
+        // is the literal bytes of the rendered prefix, and Foundation makes no
+        // ordering promise for a dictionary. Sorting makes the same request
+        // serialize identically every time, so a prefix that hasn't changed
+        // actually hits.
+        urlRequest.httpBody = try JSONSerialization.data(
+            withJSONObject: body,
+            options: [.sortedKeys]
+        )
         return urlRequest
+    }
+
+    /// Marks a block as the end of a cacheable prefix.
+    ///
+    /// Caching matters most in the screen-agent loop, which re-sends the whole
+    /// transcript every round: by step ten the request carries ten screenshots
+    /// and ten accessibility dumps, all of which the model has already been
+    /// given. A breakpoint lets everything before it be read back at a fraction
+    /// of the cost, and processed far faster, instead of being re-ingested from
+    /// scratch on every step.
+    private static func cached(_ block: [String: Any]) -> [String: Any] {
+        var block = block
+        block["cache_control"] = ["type": "ephemeral"]
+        return block
+    }
+
+    /// Encodes the transcript with a cache breakpoint on the final block.
+    ///
+    /// Caching is a prefix match, so one breakpoint at the very end covers
+    /// everything before it — tools, system, and every prior turn (the API
+    /// renders them in that order). Each round then reads the previous round's
+    /// prefix and writes a slightly longer one.
+    ///
+    /// Placing it on the *last* block specifically is what makes that work:
+    /// a breakpoint anywhere earlier would leave the newest turn — the
+    /// screenshot and accessibility dump just captured — outside the cached
+    /// region on the next request, which is precisely the bulk of what repeats.
+    private static func encodeMessages(_ messages: [CompletionMessage]) -> [[String: Any]] {
+        var encoded = messages.map(encodeMessage)
+        guard var last = encoded.last,
+              var blocks = last["content"] as? [[String: Any]],
+              let final = blocks.last else {
+            return encoded
+        }
+        blocks[blocks.count - 1] = cached(final)
+        last["content"] = blocks
+        encoded[encoded.count - 1] = last
+        return encoded
     }
 
     private static func encodeMessage(_ message: CompletionMessage) -> [String: Any] {
@@ -175,7 +223,12 @@ public final class AnthropicClient: AIProviding {
         if let usageJSON = json["usage"] as? [String: Any],
            let input = usageJSON["input_tokens"] as? Int,
            let output = usageJSON["output_tokens"] as? Int {
-            usage = CompletionUsage(inputTokens: input, outputTokens: output)
+            usage = CompletionUsage(
+                inputTokens: input,
+                outputTokens: output,
+                cacheReadInputTokens: usageJSON["cache_read_input_tokens"] as? Int ?? 0,
+                cacheCreationInputTokens: usageJSON["cache_creation_input_tokens"] as? Int ?? 0
+            )
         }
         return CompletionResponse(content: blocks, stopReason: stopReason, usage: usage)
     }

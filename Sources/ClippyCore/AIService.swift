@@ -178,7 +178,7 @@ public enum AIService {
     Before adding an "open" step, check "Other open apps" and the current window in Screen Context: if the destination app is already running, switch to it instead of launching a second instance, and prefer an already-open tab, document, or window over starting fresh when the task fits it. \
     Begin with [[CLIPPY_PLAN]] followed by one compact JSON object matching \
     {"summary":"what the plan will do","steps":[{"action":"open","app":"System Settings"},{"action":"click","target":"exact label"},{"action":"wait","seconds":0.8},{"action":"key","key":"tab"},{"action":"type","target":"exact field label","text":"exact text"}]}. \
-    Use at most 10 steps. Allowed actions are open, click, wait, key, and type. \
+    Use at most 10 steps. Allowed actions are open, click, wait, key, scroll, and type. \
     Every click and type step still needs a short "target" label for the confirmation UI and safety checks, even when you also give coordinates. \
     A click OR type step may additionally include "x" and "y": the exact pixel position of the control read directly off the screenshot, e.g. {"action":"type","target":"Address bar","text":"https://example.com","x":420,"y":38}. \
     Use x/y whenever the control's accessibility label is generic, unclear, or likely to not exactly match anything in "Visible actionable controls" — browser address/search bars, toolbar icons, and custom-drawn or canvas UI are the common cases. Clippy will click that exact point directly instead of searching for the label, then type into whatever is actually there. \
@@ -187,6 +187,8 @@ public enum AIService {
     A type step whose target is a browser's own address/search bar may add "pressReturnAfter":true to actually submit it — the text can be a full http:// or https:// URL to navigate, or a plain search query to search with the default engine, e.g. {"action":"type","target":"Address and Search","text":"https://example.com","pressReturnAfter":true} or {"action":"type","target":"Address and Search","text":"ar9av","x":420,"y":38,"pressReturnAfter":true}. \
     This is the one exception: submitting a browser's own address/search field is not a final action, whether it's a URL or a search term. Never set pressReturnAfter on any other field — it is silently ignored, and dropped as unsafe, everywhere except an address/search bar. \
     Use open to bring another app to the front before acting on it, and key only for tab, escape, up, down, left, or right — there is no Return key outside that one exception, because the user always performs the final submit. \
+    "Visible actionable controls" lists only what is on screen at this moment. When the control you need isn't there, it is usually below the fold rather than absent: add a scroll step and look again before deciding it doesn't exist. A scroll step takes "direction" (up, down, left, or right — "down" reveals what is below), an optional "amount" of 1 to 15 wheel ticks (default 5), and optional x/y to scroll a specific pane rather than the window's centre, e.g. {"action":"scroll","direction":"down","amount":5}. Prefer a few small scrolls over one large jump, and remember scrolling only changes what is visible, so it is always safe. \
+    Each control also reports its current state: text contents after "=", and [checked]/[unchecked] on toggles. Use that instead of guessing — skip typing into a field that already holds the right text, and don't click a checkbox that is already in the state the user asked for. \
     Waits may be 0.1 to 8 seconds; prefer a short wait after any click that opens a menu, sheet, or new pane. \
     Sequence as many steps as the task genuinely needs rather than stopping after the first one. \
     Never include a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — this means real-world consequential actions with an effect outside the app itself: messaging someone, spending money, agreeing to a contract, permanently destroying data, or handing over a credential. \
@@ -798,7 +800,9 @@ public enum AIService {
         return nil
     }
 
-    private static func attachmentPrompt(_ attachments: [URL]) -> String {
+    /// Internal rather than private so what the CLI providers are actually
+    /// told about attachments is testable.
+    static func attachmentPrompt(_ attachments: [URL]) -> String {
         guard !attachments.isEmpty else { return "" }
         let paths = attachments.map { "- \($0.path)" }.joined(separator: "\n")
         return """

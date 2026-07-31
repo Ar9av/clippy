@@ -110,6 +110,45 @@ public enum ScreenPlanAction: String, Codable {
     /// `AutomationSafety.isSafeAddressBarSubmit` — which is a distinct,
     /// narrowly-validated path, not a general key.
     case key
+    /// Scroll the content under a point. Without this, anything below the
+    /// fold is permanently unreachable: an accessibility scan only reports
+    /// what's currently on screen, so a control the user would find by
+    /// scrolling simply never appears in "Visible actionable controls" and
+    /// the agent concludes the target doesn't exist. Arrow keys are not a
+    /// substitute — they move focus or a caret, and most web and Electron
+    /// views ignore them entirely unless something inside is already focused.
+    case scroll
+}
+
+/// Which way the content moves under a `.scroll` step. Named for the
+/// direction the *content* travels, matching how a person describes it:
+/// "scroll down" reveals what was below the fold.
+public enum ScreenScrollDirection: String, Codable, CaseIterable {
+    case up
+    case down
+    case left
+    case right
+
+    public var displayName: String {
+        switch self {
+        case .up: "up"
+        case .down: "down"
+        case .left: "left"
+        case .right: "right"
+        }
+    }
+
+    /// Per-tick scroll deltas in the sign convention of
+    /// `CGEvent(scrollWheelEvent2Source:)`: positive vertical scrolls the
+    /// content up (revealing what's above), positive horizontal scrolls left.
+    public var unitDelta: (vertical: Int32, horizontal: Int32) {
+        switch self {
+        case .up: (1, 0)
+        case .down: (-1, 0)
+        case .left: (0, 1)
+        case .right: (0, -1)
+        }
+    }
 }
 
 /// The only keystrokes a plan may send. Anything that could submit, delete, or
@@ -182,6 +221,13 @@ public struct ScreenPlanStep: Identifiable, Codable, Equatable {
     /// no-Return rule on `ScreenPlanKey`, but only for exactly this case,
     /// not as a general submit key.
     public let pressReturnAfter: Bool?
+    /// `.scroll` only — which way the content should move.
+    public let direction: ScreenScrollDirection?
+    /// `.scroll` only — how many wheel ticks to send, clamped by
+    /// `ScreenPlanRunner.scrollTickRange`. Defaults to
+    /// `ScreenPlanRunner.defaultScrollTicks` (roughly one comfortable
+    /// flick) when the model doesn't say.
+    public let amount: Double?
 
     public init(
         action: ScreenPlanAction,
@@ -192,7 +238,9 @@ public struct ScreenPlanStep: Identifiable, Codable, Equatable {
         key: ScreenPlanKey? = nil,
         x: Double? = nil,
         y: Double? = nil,
-        pressReturnAfter: Bool? = nil
+        pressReturnAfter: Bool? = nil,
+        direction: ScreenScrollDirection? = nil,
+        amount: Double? = nil
     ) {
         self.action = action
         self.target = target
@@ -203,6 +251,8 @@ public struct ScreenPlanStep: Identifiable, Codable, Equatable {
         self.x = x
         self.y = y
         self.pressReturnAfter = pressReturnAfter
+        self.direction = direction
+        self.amount = amount
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -215,6 +265,39 @@ public struct ScreenPlanStep: Identifiable, Codable, Equatable {
         case x
         case y
         case pressReturnAfter
+        case direction
+        case amount
+    }
+
+    /// Hand-written purely so an unrecognised `key` or `direction` decodes to
+    /// `nil` instead of throwing.
+    ///
+    /// The CLI providers hand back free-text JSON with no server-side schema
+    /// to enforce the enum, so a plausible near-miss ("downward", "pagedown")
+    /// is a question of when, not if. With the synthesized decoder that threw
+    /// on the whole container, one bad value on step 5 destroyed steps 1-4
+    /// too — and destroyed them at parse time, where `screenPlan(from:)` just
+    /// returns nil and the response falls through as ordinary prose with no
+    /// indication a plan was ever meant. Decoding leniently leaves
+    /// `ScreenPlanRunner.validate` as the single place a step is rejected,
+    /// which fails loudly, names the step, and keeps the rest of the plan
+    /// intact. It is never more permissive: a step that needs a key or a
+    /// direction and hasn't got one still can't run.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(ScreenPlanAction.self, forKey: .action)
+        target = try container.decodeIfPresent(String.self, forKey: .target)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        seconds = try container.decodeIfPresent(Double.self, forKey: .seconds)
+        app = try container.decodeIfPresent(String.self, forKey: .app)
+        x = try container.decodeIfPresent(Double.self, forKey: .x)
+        y = try container.decodeIfPresent(Double.self, forKey: .y)
+        pressReturnAfter = try container.decodeIfPresent(Bool.self, forKey: .pressReturnAfter)
+        amount = try container.decodeIfPresent(Double.self, forKey: .amount)
+        key = try container.decodeIfPresent(String.self, forKey: .key)
+            .flatMap(ScreenPlanKey.init(rawValue:))
+        direction = try container.decodeIfPresent(String.self, forKey: .direction)
+            .flatMap(ScreenScrollDirection.init(rawValue:))
     }
 
     public var displayText: String {
@@ -229,6 +312,8 @@ public struct ScreenPlanStep: Identifiable, Codable, Equatable {
             "Switch to \(app ?? "the app")"
         case .key:
             "Press \(key?.displayName ?? "a key")"
+        case .scroll:
+            "Scroll \(direction?.displayName ?? "down")\(target.map { " in “\($0)”" } ?? "")"
         }
     }
 }

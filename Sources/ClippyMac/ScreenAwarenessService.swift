@@ -151,58 +151,132 @@ final class ScreenAwarenessService {
             throw ScreenAwarenessError.noWindow
         }
 
-        let configuration = SCStreamConfiguration()
-        let scale = NSScreen.screens.first(where: {
-            $0.frame.intersects(window.frame)
-        })?.backingScaleFactor ?? 2
-        configuration.width = max(1, Int(window.frame.width * scale))
-        configuration.height = max(1, Int(window.frame.height * scale))
-        configuration.showsCursor = false
-        configuration.capturesAudio = false
+        // Capture every attached display in full, not just the active window.
+        // The window alone left anything on a second monitor invisible — a
+        // request about "the other screen" had nothing to look at.
+        let anchorDisplay = content.displays.first { $0.frame.intersects(window.frame) }
+            ?? content.displays.first
+        guard let anchorDisplay else { throw ScreenAwarenessError.noWindow }
 
-        let image = try await SCScreenshotManager.captureImage(
-            contentFilter: SCContentFilter(desktopIndependentWindow: window),
-            configuration: configuration
-        )
         let elements = scan(application: application, limitedTo: window.frame)
         let directory = try contextDirectory()
         let identifier = UUID().uuidString
-        let screenshotURL = directory.appendingPathComponent("Screen-\(identifier).png")
-        try writePNG(image, to: screenshotURL)
+
+        var displayShots: [DisplayShot] = []
+        for display in content.displays {
+            let isAnchor = display.displayID == anchorDisplay.displayID
+            let url = directory.appendingPathComponent(
+                "Screen-\(identifier)-\(display.displayID).png"
+            )
+            do {
+                let shot = try await captureDisplay(display, to: url, isAnchor: isAnchor)
+                // Anchor first, so a consumer taking one image gets the one
+                // being acted on.
+                if isAnchor { displayShots.insert(shot, at: 0) } else { displayShots.append(shot) }
+            } catch {
+                // One unreadable display (just unplugged, mid-mode-change)
+                // must not cost the user the rest of the observation.
+                if isAnchor { throw error }
+            }
+        }
+        guard let anchorShot = displayShots.first else {
+            throw ScreenAwarenessError.noWindow
+        }
+        // Actions are bounded to the display holding the active window, and
+        // model-supplied x/y are read in that display's point space.
+        let actionBounds = anchorShot.frame
+        let scale = anchorShot.scale
 
         let windowTitle = window.title?.isEmpty == false ? window.title! : "Untitled"
         let otherApps = Self.otherRunningApplications(excluding: application)
-        let truncationNote = elements.count > 100
-            ? "\n…and \(elements.count - 100) more controls not shown here."
+        let promptLimit = 140
+        let shown = ScreenElementSummary.promptOrdered(elements, limit: promptLimit)
+        let truncationNote = elements.count > shown.count
+            ? "\n…and \(elements.count - shown.count) more controls not listed. Anything you need that isn't here may simply be off screen — scroll and look again."
             : ""
+        let displayLines = displayShots.enumerated().map { index, shot in
+            "- Image \(index + 1): \(shot.name)\(shot.isAnchor ? " (active — the one you can act on)" : "")"
+                + " covering x \(Int(shot.frame.minX)) to \(Int(shot.frame.maxX)),"
+                + " y \(Int(shot.frame.minY)) to \(Int(shot.frame.maxY))"
+        }.joined(separator: "\n")
         let spatialText = """
         Current app: \(application.localizedName ?? "Unknown")
         Current window: \(windowTitle)
         Window frame: x \(Int(window.frame.minX)), y \(Int(window.frame.minY)), width \(Int(window.frame.width)), height \(Int(window.frame.height))
-        The screenshot image is \(String(format: "%.0f", scale))x this window's point size (e.g. a point at x=10 in this list is at pixel x=\(String(format: "%.0f", 10 * scale)) in the image) — any x/y you give must be in the point space of this list and the Window frame line above, never raw image pixels.
+
+        Attached screenshots — one per display, in this order. All coordinates \
+        below (and every x/y you give back) are in one shared point space that \
+        spans every display, so a control on a second monitor simply has a \
+        larger x than one on the first:
+        \(displayLines)
+        The active display's image is \(String(format: "%.2f", scale))x its point size (e.g. a point at x=10 on it is at pixel x=\(String(format: "%.0f", 10 * scale)) in that image) — any x/y you give must be in the shared point space above, never raw image pixels.
+        You can see every display, but you can only act on the active one: a click or type must land inside x \(Int(actionBounds.minX)) to \(Int(actionBounds.maxX)), y \(Int(actionBounds.minY)) to \(Int(actionBounds.maxY)). To act on something you can see on another display, first switch to the app that owns it.
 
         Other open apps (already running — prefer switching to one of these over launching a new instance, and reuse an already-open tab/document when the task fits it): \
         \(otherApps.isEmpty ? "none" : otherApps.joined(separator: ", "))
 
-        Visible actionable controls (screen coordinates):
-        \(elements.prefix(100).map(\.contextLine).joined(separator: "\n"))\(truncationNote)
+        Visible actionable controls (screen coordinates, in reading order). A control's current \
+        contents appear after "=", and toggles show [checked]/[unchecked] — check these before \
+        acting, so you don't retype a field that already holds the right text or click a switch \
+        that is already on:
+        \(shown.map(\.contextLine).joined(separator: "\n"))\(truncationNote)
 
-        Use the screenshot for appearance and this list for precise labels and positions.
+        Use the screenshots for appearance and this list for precise labels and positions.
         """
         let contextURL = directory.appendingPathComponent("Screen-Context-\(identifier).txt")
         try spatialText.write(to: contextURL, atomically: true, encoding: .utf8)
 
-        lastWindowFrame = window.frame
+        lastWindowFrame = actionBounds
         lastScreenshotScale = scale
 
         return ScreenContext(
             appName: application.localizedName ?? "the current app",
             windowTitle: windowTitle,
-            screenshotURL: screenshotURL,
             contextURL: contextURL,
             elements: elements,
-            windowFrame: window.frame,
+            displayShots: displayShots,
+            windowFrame: actionBounds,
             screenshotScale: scale
+        )
+    }
+
+    /// Captures one display whole, downscales it, and writes it out.
+    private func captureDisplay(
+        _ display: SCDisplay,
+        to url: URL,
+        isAnchor: Bool
+    ) async throws -> DisplayShot {
+        let screen = NSScreen.screens.first { $0.frame.intersects(display.frame) }
+        let backingScale = screen?.backingScaleFactor ?? 2
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, Int(display.frame.width * backingScale))
+        configuration.height = max(1, Int(display.frame.height * backingScale))
+        configuration.showsCursor = false
+        configuration.capturesAudio = false
+
+        let image = try await SCScreenshotManager.captureImage(
+            // Exclude nothing: the point of a full-display shot is to show
+            // what is actually there, including windows of other apps.
+            contentFilter: SCContentFilter(display: display, excludingWindows: []),
+            configuration: configuration
+        )
+        // See `downscaledForModel` — encoding a full 4K display at native
+        // resolution would cost far more than the detail is worth, and the
+        // API downsamples past this bound on arrival anyway.
+        let modelImage = Self.downscaledForModel(image)
+        try writePNG(modelImage, to: url)
+
+        // Derive the ratio from the image actually written, not the display's
+        // backing scale — every coordinate correction downstream keys off it.
+        let scale = display.frame.width > 0
+            ? CGFloat(modelImage.width) / CGFloat(display.frame.width)
+            : backingScale
+        return DisplayShot(
+            name: screen?.localizedName ?? "Display \(display.displayID)",
+            url: url,
+            frame: display.frame,
+            scale: scale,
+            isAnchor: isAnchor
         )
     }
 
@@ -505,6 +579,78 @@ final class ScreenAwarenessService {
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         try await Task.sleep(for: .milliseconds(140))
+    }
+
+    /// Scrolls the content under `point`, defaulting to the centre of the
+    /// captured window. Nothing here can commit, send, or destroy anything —
+    /// it only changes what is visible — so unlike click and type this has no
+    /// final-action gate. It keeps the restricted-app refusal, because
+    /// scrolling a terminal still means synthesising input into one.
+    func scrollContent(
+        _ direction: ScreenScrollDirection,
+        ticks: Int,
+        at point: CGPoint?
+    ) async throws {
+        guard AXIsProcessTrusted() else {
+            throw ScreenAwarenessError.accessibilityPermission
+        }
+        if let restrictedFrontmost = topmostExternalApplication(includeRestricted: true),
+           AutomationSafety.isRestricted(restrictedFrontmost) {
+            throw ScreenAwarenessError.restrictedApp(
+                restrictedFrontmost.localizedName ?? "this app"
+            )
+        }
+        // A scroll wheel event goes to whatever sits under the pointer, not
+        // to the focused app — so the pointer has to be over the target
+        // window first, or the scroll silently lands somewhere else.
+        let resolved = point.map {
+            CoordinateSpace.resolvedPoint($0, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
+        } ?? lastWindowFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
+        guard let target = resolved else {
+            throw ScreenAwarenessError.noWindow
+        }
+        guard CoordinateSpace.isWithinBounds(target, windowFrame: lastWindowFrame) else {
+            throw ScreenAwarenessError.targetUnavailable
+        }
+        if let application = topmostExternalApplication() ?? lastExternalApplication {
+            NSRunningApplication(processIdentifier: application.processIdentifier)?
+                .activate(options: [.activateAllWindows])
+            try await Task.sleep(for: .milliseconds(120))
+        }
+        if let moved = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: target,
+            mouseButton: .left
+        ) {
+            moved.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(60))
+        }
+
+        let delta = direction.unitDelta
+        // One event per tick rather than a single large delta: apps with
+        // momentum or snap-to-item scrolling (Finder icon views, many web
+        // views) treat one big jump very differently from a real flick, and
+        // some ignore an oversized delta outright.
+        for _ in 0..<max(1, ticks) {
+            guard let event = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .line,
+                wheelCount: 2,
+                wheel1: delta.vertical,
+                wheel2: delta.horizontal,
+                wheel3: 0
+            ) else {
+                throw ScreenAwarenessError.targetUnavailable
+            }
+            event.location = target
+            event.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        // Let the view settle — and any lazily-rendered content load — before
+        // the agent loop takes its next screenshot, or it observes the scroll
+        // mid-flight and re-scrolls past what it was looking for.
+        try await Task.sleep(for: .milliseconds(400))
     }
 
     func put(_ text: String, into query: String) async throws {
@@ -847,8 +993,25 @@ final class ScreenAwarenessService {
             score += 80
             if role == "TextArea" { score += 20 }
         }
+        // Break ties toward a purpose-built control. The scan also keeps
+        // structural roles that merely answer to a press (a pressable label
+        // or table cell), which is what makes custom web and Electron UI
+        // reachable — but when a real Button and a same-named StaticText both
+        // match, the Button is what the user means, and without this the
+        // winner between two equal scores is whichever the tree happened to
+        // yield first.
+        if score > 0, Self.primaryInteractiveRoles.contains(role) { score += 5 }
         return score
     }
+
+    /// Roles that exist to be interacted with, as opposed to the structural
+    /// ones the scan's press probe can also turn up. See `matchScore`.
+    nonisolated static let primaryInteractiveRoles: Set<String> = [
+        "Button", "CheckBox", "RadioButton", "PopUpButton", "ComboBox",
+        "TextField", "TextArea", "Link", "MenuItem", "MenuBarItem",
+        "DisclosureTriangle", "Slider", "Incrementor", "MenuButton",
+        "Switch", "SearchField"
+    ]
 
     /// `includeRestricted: false` (the default) is for anything that will
     /// act on the result — click, type, or resolve targets — so a terminal
@@ -1046,6 +1209,14 @@ final class ScreenAwarenessService {
         limitedTo windowFrame: CGRect
     ) -> [ScreenElementSummary] {
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        // Accessibility calls block on the target app answering, and the
+        // default timeout is measured in seconds. One busy app — a browser
+        // mid-layout, an Electron app doing work on its main thread — could
+        // therefore hang a whole scan, and with it the user's request. Cap
+        // how long any single read may wait: a control that can't answer
+        // promptly is treated as absent, which is far better than a request
+        // that appears to have frozen.
+        AXUIElementSetMessagingTimeout(appElement, Self.axMessagingTimeout)
         var roots: [AXUIElement] = []
         if let root {
             roots.append(root)
@@ -1064,59 +1235,274 @@ final class ScreenAwarenessService {
             roots.append(appElement)
         }
         var queue: [(AXUIElement, Int)] = roots.map { ($0, 0) }
+        var head = 0
         var results: [ResolvedElement] = []
         var visited = Set<CFHashCode>()
-        let actionableRoles: Set<String> = [
-            kAXButtonRole as String,
-            kAXCheckBoxRole as String,
-            kAXRadioButtonRole as String,
-            kAXPopUpButtonRole as String,
-            kAXComboBoxRole as String,
-            kAXTextFieldRole as String,
-            kAXTextAreaRole as String,
-            "AXLink",
-            kAXMenuItemRole as String,
-            kAXTabGroupRole as String
-        ]
+        var pressProbes = 0
 
-        while !queue.isEmpty && results.count < 160 {
-            let (element, depth) = queue.removeFirst()
+        while head < queue.count && results.count < Self.maxScannedElements {
+            // Nothing worth finding is behind a tree this large, and an
+            // unbounded walk of a big web view would stall every request.
+            guard visited.count < Self.maxVisitedNodes else { break }
+            let (element, depth) = queue[head]
+            head += 1
             let hash = CFHash(element)
             guard visited.insert(hash).inserted else { continue }
             let role = stringAttribute(kAXRoleAttribute, from: element) ?? ""
-            if actionableRoles.contains(role),
-               let frame = frame(of: element),
-               frame.width >= 4,
-               frame.height >= 4,
-               frame.intersects(windowFrame) || role == kAXMenuItemRole as String {
-                let label = [
-                    stringAttribute(kAXTitleAttribute, from: element),
-                    stringAttribute(kAXDescriptionAttribute, from: element),
-                    stringAttribute(kAXHelpAttribute, from: element),
-                    stringAttribute(kAXPlaceholderValueAttribute, from: element)
-                ]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first(where: { !$0.isEmpty }) ?? role.replacingOccurrences(of: "AX", with: "")
-                let summary = ScreenElementSummary(
-                    id: UUID(),
-                    label: label,
-                    role: role.replacingOccurrences(of: "AX", with: ""),
-                    frame: frame,
-                    enabled: boolAttribute(kAXEnabledAttribute, from: element) ?? true
-                )
-                results.append(ResolvedElement(
-                    summary: summary,
-                    element: element,
-                    processIdentifier: application.processIdentifier
-                ))
+            // Decide from the role alone whether this node is even worth
+            // reading further. Every attribute below costs an accessibility
+            // round trip, and the overwhelming majority of nodes in a web or
+            // Electron tree are structural groups — reading frames and labels
+            // for those would make the scan cost several times what it does
+            // for the handful of nodes that can actually be acted on.
+            let isKnownActionable = Self.actionableRoles.contains(role)
+            // Roles that are usually structural but that some frameworks make
+            // clickable. Worth the extra reads only while the probe budget
+            // holds out.
+            let isProbeCandidate = !isKnownActionable
+                && Self.pressProbeRoles.contains(role)
+                && pressProbes < Self.maxPressProbes
+            if isKnownActionable || isProbeCandidate {
+                // Menus and menu-bar items live outside the window's own frame
+                // by definition, so they're exempt from the intersection test
+                // that keeps everything else clipped to the window being
+                // worked in.
+                let isMenuRole = Self.menuRoles.contains(role)
+                // One round trip for everything this node needs, rather than
+                // one per attribute. Each accessibility read is IPC into the
+                // target app, so a scan that touched nine attributes across
+                // nine calls spent almost all of its time waiting.
+                let details = nodeDetails(of: element)
+                if let frame = details.frame,
+                   frame.width >= 4,
+                   frame.height >= 4,
+                   frame.intersects(windowFrame) || isMenuRole {
+                    let label = details.label
+
+                    // A probe candidate only counts if it both carries a name
+                    // and actually answers to a press — that's how a
+                    // custom-drawn control in an Electron or web view gets
+                    // found, since those routinely render a real button as a
+                    // named image or cell that no role list would ever match.
+                    var isActionable = isKnownActionable
+                    if !isActionable, label != nil {
+                        pressProbes += 1
+                        isActionable = supportsPress(element)
+                    }
+
+                    if isActionable {
+                        let summary = ScreenElementSummary(
+                            id: UUID(),
+                            label: label ?? role.replacingOccurrences(of: "AX", with: ""),
+                            role: role.replacingOccurrences(of: "AX", with: ""),
+                            frame: frame,
+                            enabled: details.enabled ?? true,
+                            value: Self.readableValue(details.value, role: role),
+                            checked: Self.checkedState(details.value, role: role),
+                            focused: details.focused ?? false
+                        )
+                        results.append(ResolvedElement(
+                            summary: summary,
+                            element: element,
+                            processIdentifier: application.processIdentifier
+                        ))
+                    }
+                }
             }
-            guard depth < 9 else { continue }
+            guard depth < Self.maxScanDepth else { continue }
             queue.append(contentsOf: children(of: element).map { ($0, depth + 1) })
         }
 
         resolvedElements = Dictionary(uniqueKeysWithValues: results.map { ($0.summary.id, $0) })
         return results.map(\.summary)
     }
+
+    /// Web and Electron content sits far deeper than a native window's own
+    /// controls: an AXWebArea's buttons are routinely 15-plus levels below the
+    /// window. The old limit of 9 stopped short of nearly all of it, which is
+    /// why page content so often looked "not on screen" to the agent and every
+    /// browser interaction had to fall back to raw coordinates.
+    private static let maxScanDepth = 26
+    private static let maxScannedElements = 300
+    private static let maxVisitedNodes = 9000
+    /// The press probe costs one extra accessibility round trip per candidate,
+    /// so it gets its own budget rather than riding the node budget.
+    private static let maxPressProbes = 400
+    /// Long enough that a healthy app always answers, short enough that a
+    /// stalled one can't hold up the request. Applies per accessibility read.
+    private static let axMessagingTimeout: Float = 0.25
+
+    private static let actionableRoles: Set<String> = [
+        kAXButtonRole as String,
+        kAXCheckBoxRole as String,
+        kAXRadioButtonRole as String,
+        kAXPopUpButtonRole as String,
+        kAXComboBoxRole as String,
+        kAXTextFieldRole as String,
+        kAXTextAreaRole as String,
+        "AXLink",
+        kAXMenuItemRole as String,
+        // Without this the top-level menu titles (File, Edit, View) are
+        // invisible, so a menu can never be opened in the first place — only
+        // the items inside one that already happens to be open.
+        kAXMenuBarItemRole as String,
+        kAXTabGroupRole as String,
+        kAXDisclosureTriangleRole as String,
+        kAXSliderRole as String,
+        kAXIncrementorRole as String,
+        kAXMenuButtonRole as String,
+        "AXSwitch",
+        "AXSearchField"
+    ]
+
+    /// Roles that are usually structural but that web and app frameworks
+    /// sometimes make clickable. Candidates here are only kept if they carry a
+    /// name *and* answer to a press.
+    private static let pressProbeRoles: Set<String> = [
+        kAXStaticTextRole as String,
+        kAXImageRole as String,
+        kAXCellRole as String,
+        kAXRowRole as String,
+        "AXHeading"
+    ]
+
+    private func supportsPress(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(element, &names) == .success,
+              let actions = names as? [String] else { return false }
+        return actions.contains(kAXPressAction as String)
+    }
+
+    /// Everything the scan needs about one node, fetched together.
+    private struct NodeDetails {
+        var frame: CGRect?
+        var label: String?
+        var enabled: Bool?
+        var focused: Bool?
+        /// Raw `AXValue` — a string for a text field, a 0/1 number for a
+        /// toggle. Interpreted by role, since the attribute is shared.
+        var value: CFTypeRef?
+    }
+
+    private static let nodeAttributes: [String] = [
+        kAXPositionAttribute as String,
+        kAXSizeAttribute as String,
+        kAXTitleAttribute as String,
+        kAXDescriptionAttribute as String,
+        kAXHelpAttribute as String,
+        kAXPlaceholderValueAttribute as String,
+        kAXEnabledAttribute as String,
+        kAXFocusedAttribute as String,
+        kAXValueAttribute as String
+    ]
+
+    /// Reads every attribute the scan cares about in a single accessibility
+    /// call. `AXUIElementCopyMultipleAttributeValues` returns one entry per
+    /// requested name, substituting an error placeholder for any the element
+    /// doesn't implement — those simply fail their casts below and stay nil,
+    /// which is the same outcome the one-at-a-time reads produced.
+    private func nodeDetails(of element: AXUIElement) -> NodeDetails {
+        var raw: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(
+            element,
+            Self.nodeAttributes as CFArray,
+            AXCopyMultipleAttributeOptions(),
+            &raw
+        ) == .success,
+            let values = raw as? [CFTypeRef],
+            values.count == Self.nodeAttributes.count else {
+            // Some elements refuse the batch call; fall back rather than
+            // silently dropping a control that is really there.
+            return NodeDetails(
+                frame: frame(of: element),
+                label: label(of: element),
+                enabled: boolAttribute(kAXEnabledAttribute, from: element),
+                focused: boolAttribute(kAXFocusedAttribute, from: element),
+                value: copyAttribute(kAXValueAttribute, from: element)
+            )
+        }
+
+        var details = NodeDetails()
+        if let position = Self.point(from: values[0]), let size = Self.size(from: values[1]) {
+            details.frame = CGRect(origin: position, size: size)
+        }
+        details.label = values[2...5]
+            .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+        details.enabled = values[6] as? Bool
+        details.focused = values[7] as? Bool
+        details.value = values[8]
+        return details
+    }
+
+    nonisolated private static func point(from value: CFTypeRef) -> CGPoint? {
+        guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgPoint else { return nil }
+        var point = CGPoint.zero
+        return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+    }
+
+    nonisolated private static func size(from value: CFTypeRef) -> CGSize? {
+        guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgSize else { return nil }
+        var size = CGSize.zero
+        return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+    }
+
+    /// A control's current contents, when reading them is meaningful. Toggles
+    /// are excluded because their value is the 0/1 that `checkedState`
+    /// already reports in a readable form.
+    nonisolated private static func readableValue(_ value: CFTypeRef?, role: String) -> String? {
+        let valueRoles: Set<String> = [
+            kAXTextFieldRole as String,
+            kAXTextAreaRole as String,
+            kAXComboBoxRole as String,
+            kAXPopUpButtonRole as String,
+            "AXSearchField"
+        ]
+        guard valueRoles.contains(role), let value else { return nil }
+        return value as? String
+    }
+
+    nonisolated private static func checkedState(_ value: CFTypeRef?, role: String) -> Bool? {
+        let toggleRoles: Set<String> = [
+            kAXCheckBoxRole as String,
+            kAXRadioButtonRole as String,
+            "AXSwitch"
+        ]
+        guard toggleRoles.contains(role), let value, let number = value as? NSNumber else {
+            return nil
+        }
+        return number.intValue != 0
+    }
+
+    private func label(of element: AXUIElement) -> String? {
+        [
+            stringAttribute(kAXTitleAttribute, from: element),
+            stringAttribute(kAXDescriptionAttribute, from: element),
+            stringAttribute(kAXHelpAttribute, from: element),
+            stringAttribute(kAXPlaceholderValueAttribute, from: element)
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first(where: { !$0.isEmpty })
+    }
+
+    private func copyAttribute(_ attribute: String, from element: AXUIElement) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success else { return nil }
+        return value
+    }
+
+    private static let menuRoles: Set<String> = [
+        kAXMenuItemRole as String,
+        kAXMenuBarItemRole as String
+    ]
 
     private func frame(of element: AXUIElement) -> CGRect? {
         var positionValue: CFTypeRef?
@@ -1163,6 +1549,38 @@ final class ScreenAwarenessService {
             withIntermediateDirectories: true
         )
         return directory
+    }
+
+    /// The longest edge a screenshot is worth encoding at. Matches the bound
+    /// the API downsamples to on arrival, so going above it costs encode time,
+    /// disk, upload, and tokens while adding no detail the model can use.
+    nonisolated static let maxScreenshotDimension = 1568
+
+    /// Shrinks an oversized capture, preserving aspect ratio exactly (one
+    /// scale factor for both axes) so screen points map onto image pixels by a
+    /// single multiplier. A capture already within the bound is returned
+    /// untouched and stays pixel-exact.
+    nonisolated static func downscaledForModel(_ image: CGImage) -> CGImage {
+        let longest = max(image.width, image.height)
+        guard longest > maxScreenshotDimension else { return image }
+        let ratio = Double(maxScreenshotDimension) / Double(longest)
+        let width = max(1, Int((Double(image.width) * ratio).rounded()))
+        let height = max(1, Int((Double(image.height) * ratio).rounded()))
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+        ) else {
+            // Better a slow correct screenshot than none at all.
+            return image
+        }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage() ?? image
     }
 
     private func writePNG(_ image: CGImage, to url: URL) throws {
@@ -1250,6 +1668,10 @@ extension ScreenAwarenessService: ScreenStepPerforming {
 
     func type(_ text: String, into target: String, at point: CGPoint, pressReturnAfter: Bool) async throws {
         try await putAtPoint(text, at: point, label: target, pressReturnAfter: pressReturnAfter)
+    }
+
+    func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {
+        try await scrollContent(direction, ticks: ticks, at: point)
     }
 
     func idle(_ seconds: Double) async throws {
