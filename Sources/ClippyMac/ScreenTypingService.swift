@@ -129,6 +129,10 @@ final class ScreenTypingService {
         }
     }
 
+    /// The element the monitor last captured, for callers that need to watch
+    /// its contents change (see `ScreenAwarenessService.clearField`).
+    var capturedElement: AXUIElement? { target?.element }
+
     @discardableResult
     func insert(_ text: String) async throws -> String {
         try prepareForInsertion()

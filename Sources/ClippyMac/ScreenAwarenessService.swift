@@ -331,6 +331,70 @@ final class ScreenAwarenessService {
         self.highlightedElementID = nil
     }
 
+    // MARK: Waiting
+
+    /// Polls `condition` until it holds, giving up after `timeout`.
+    ///
+    /// Every call site that uses this replaced a fixed `Task.sleep` whose
+    /// duration became the timeout, so the worst case is exactly what it was
+    /// before and the common case is far shorter: the delays were guesses at
+    /// how long an app might take, and an app that reacts in 40ms was still
+    /// costing the full 750.
+    @discardableResult
+    private func waitUntil(
+        timeout: Duration,
+        poll: Duration = .milliseconds(25),
+        _ condition: () -> Bool
+    ) async -> Bool {
+        if condition() { return true }
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: poll)
+            if condition() { return true }
+        }
+        return condition()
+    }
+
+    /// A cheap signal of "has anything changed on screen" — the frontmost app,
+    /// the focused window, and the focused control's identity and contents.
+    /// Deliberately a handful of accessibility reads rather than a full scan,
+    /// since this is sampled repeatedly.
+    private func screenFingerprint() -> String {
+        let app = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        var parts = ["pid:\(app)"]
+        if let focused = focusedWindowElement(for: app) {
+            parts.append(stringAttribute(kAXTitleAttribute, from: focused) ?? "")
+        }
+        var element: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(),
+            kAXFocusedUIElementAttribute as CFString,
+            &element
+        ) == .success, let element {
+            let control = unsafeBitCast(element, to: AXUIElement.self)
+            parts.append(stringAttribute(kAXRoleAttribute, from: control) ?? "")
+            parts.append(stringAttribute(kAXTitleAttribute, from: control) ?? "")
+            parts.append(stringAttribute(kAXValueAttribute, from: control) ?? "")
+        }
+        return parts.joined(separator: "|")
+    }
+
+    /// Waits for the screen to stop changing rather than for a fixed duration.
+    ///
+    /// A short floor first, so an app that hasn't begun reacting yet isn't
+    /// mistaken for one that has finished; then poll until two consecutive
+    /// samples match. Bounded by `timeout`, which is the delay this replaced —
+    /// an interface that keeps churning costs exactly what it used to.
+    func settleScreen(within timeout: Duration, floor: Duration = .milliseconds(70)) async {
+        try? await Task.sleep(for: floor)
+        var previous = screenFingerprint()
+        await waitUntil(timeout: timeout, poll: .milliseconds(40)) {
+            let current = self.screenFingerprint()
+            defer { previous = current }
+            return current == previous
+        }
+    }
+
     func runClick(matching query: String) async throws {
         guard !AutomationSafety.isFinalAction(query) else {
             throw ScreenAwarenessError.unsafeAction(query)
@@ -338,7 +402,7 @@ final class ScreenAwarenessService {
         try await waitForTarget(query)
         _ = try highlight(matching: query, instruction: "Clippy is clicking \(query)")
         try clickHighlighted()
-        try await Task.sleep(for: .milliseconds(750))
+        await settleScreen(within: .milliseconds(750))
     }
 
     /// Clicks a raw screen point instead of resolving a label through the
@@ -349,7 +413,7 @@ final class ScreenAwarenessService {
     /// would just click where they can see the control.
     func clickAtPoint(_ point: CGPoint, label: String) async throws {
         try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is clicking \(label)")
-        try await Task.sleep(for: .milliseconds(750))
+        await settleScreen(within: .milliseconds(750))
     }
 
     /// Types by clicking a raw screen point first, then handing off to
@@ -372,10 +436,11 @@ final class ScreenAwarenessService {
         pressReturnAfter: Bool
     ) async throws {
         try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is typing into \(label)")
-        // Give ScreenTypingService's global mouse-down monitor a moment to
-        // resolve and capture the element actually at this point before
-        // acting on it — that capture is dispatched asynchronously.
-        try await Task.sleep(for: .milliseconds(220))
+        // The monitor's capture is dispatched asynchronously, so poll for it
+        // rather than guessing how long it takes.
+        await waitUntil(timeout: .milliseconds(220)) {
+            (try? ScreenTypingService.shared.verifiedNonSecureTarget()) != nil
+        }
         // The click was posted at a model-supplied coordinate with no
         // confirmation it actually landed on an editable field — if the
         // coordinate space was off, the click could have hit anything.
@@ -426,9 +491,10 @@ final class ScreenAwarenessService {
             )
         }
         if let application = topmostExternalApplication() ?? lastExternalApplication {
-            NSRunningApplication(processIdentifier: application.processIdentifier)?
-                .activate(options: [.activateAllWindows])
-            try await Task.sleep(for: .milliseconds(180))
+            let running = NSRunningApplication(processIdentifier: application.processIdentifier)
+            running?.activate(options: [.activateAllWindows])
+            // Activation is what we're waiting on, so wait for exactly that.
+            await waitUntil(timeout: .milliseconds(180)) { running?.isActive ?? true }
         }
         highlightController.show(around: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), label: highlightLabel)
         guard let moved = CGEvent(
@@ -513,7 +579,7 @@ final class ScreenAwarenessService {
             // that the app actually came forward. Re-opening the bundle is the
             // supported way to raise an already-running app, so fall back to
             // it whenever the direct activation didn't take.
-            try? await Task.sleep(for: .milliseconds(150))
+            await waitUntil(timeout: .milliseconds(150)) { running.isActive }
             if !running.isActive, let bundleURL = running.bundleURL {
                 let configuration = NSWorkspace.OpenConfiguration()
                 configuration.activates = true
@@ -613,9 +679,9 @@ final class ScreenAwarenessService {
             throw ScreenAwarenessError.targetUnavailable
         }
         if let application = topmostExternalApplication() ?? lastExternalApplication {
-            NSRunningApplication(processIdentifier: application.processIdentifier)?
-                .activate(options: [.activateAllWindows])
-            try await Task.sleep(for: .milliseconds(120))
+            let running = NSRunningApplication(processIdentifier: application.processIdentifier)
+            running?.activate(options: [.activateAllWindows])
+            await waitUntil(timeout: .milliseconds(120)) { running?.isActive ?? true }
         }
         if let moved = CGEvent(
             mouseEventSource: nil,
@@ -650,7 +716,7 @@ final class ScreenAwarenessService {
         // Let the view settle — and any lazily-rendered content load — before
         // the agent loop takes its next screenshot, or it observes the scroll
         // mid-flight and re-scrolls past what it was looking for.
-        try await Task.sleep(for: .milliseconds(400))
+        await settleScreen(within: .milliseconds(400))
     }
 
     func put(_ text: String, into query: String) async throws {
@@ -681,15 +747,18 @@ final class ScreenAwarenessService {
             throw ScreenAwarenessError.notEditable(query)
         }
 
-        NSRunningApplication(processIdentifier: resolved.processIdentifier)?
-            .activate(options: [.activateAllWindows])
-        try await Task.sleep(for: .milliseconds(180))
+        let running = NSRunningApplication(processIdentifier: resolved.processIdentifier)
+        running?.activate(options: [.activateAllWindows])
+        await waitUntil(timeout: .milliseconds(180)) { running?.isActive ?? true }
         AXUIElementSetAttributeValue(
             resolved.element,
             kAXFocusedAttribute as CFString,
             kCFBooleanTrue
         )
-        try await Task.sleep(for: .milliseconds(80))
+        // Poll for focus to land instead of assuming it took.
+        await waitUntil(timeout: .milliseconds(80)) {
+            self.boolAttribute(kAXFocusedAttribute, from: resolved.element) ?? true
+        }
 
         let result = AXUIElementSetAttributeValue(
             resolved.element,
@@ -697,7 +766,9 @@ final class ScreenAwarenessService {
             text as CFString
         )
         if result == .success {
-            try await Task.sleep(for: .milliseconds(160))
+            await waitUntil(timeout: .milliseconds(160)) {
+                self.stringAttribute(kAXValueAttribute, from: resolved.element) == text
+            }
             if stringAttribute(kAXValueAttribute, from: resolved.element) == text {
                 if pressReturnAfter {
                     try await pressReturnKey()
@@ -723,7 +794,9 @@ final class ScreenAwarenessService {
         // failing inside a sequence: later steps would keep clicking through an
         // interface that never received the input. A field that exposes no
         // readable value at all (some web composers) is accepted as before.
-        try await Task.sleep(for: .milliseconds(160))
+        await waitUntil(timeout: .milliseconds(160)) {
+            self.stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) ?? false
+        }
         if let written = stringAttribute(kAXValueAttribute, from: resolved.element),
            !written.contains(text) {
             throw ScreenAwarenessError.textNotAccepted(query)
@@ -771,12 +844,40 @@ final class ScreenAwarenessService {
         }
         selectDown.flags = .maskCommand
         selectUp.flags = .maskCommand
+        // The field whose contents we're clearing is the one the typing
+        // service just captured, so poll its value rather than guessing how
+        // long each keystroke takes to land.
+        let field = ScreenTypingService.shared.capturedElement
         selectDown.post(tap: .cghidEventTap)
         selectUp.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(150))
+        await waitUntil(timeout: .milliseconds(150)) {
+            guard let field else { return false }
+            return self.hasSelection(in: field)
+        }
         deleteDown.post(tap: .cghidEventTap)
         deleteUp.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(150))
+        await waitUntil(timeout: .milliseconds(150)) {
+            guard let field else { return false }
+            return (self.stringAttribute(kAXValueAttribute, from: field) ?? "").isEmpty
+        }
+    }
+
+    /// Whether the element currently has a non-empty selection — how we know
+    /// the synthetic Cmd+A actually landed.
+    private func hasSelection(in element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success, let value, CFGetTypeID(value) == AXValueGetTypeID() else {
+            return false
+        }
+        var range = CFRange()
+        guard AXValueGetValue(unsafeBitCast(value, to: AXValue.self), .cfRange, &range) else {
+            return false
+        }
+        return range.length > 0
     }
 
     /// Re-scan immediately before writing a drafted reply. Web apps frequently
@@ -1140,7 +1241,9 @@ final class ScreenAwarenessService {
         up.flags = .maskCommand
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(220))
+        await waitUntil(timeout: .milliseconds(220)) {
+            self.stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) ?? false
+        }
         let value = stringAttribute(kAXValueAttribute, from: resolved.element)
         guard value?.contains(text) == true else {
             throw ScreenAwarenessError.targetUnavailable
@@ -1672,6 +1775,11 @@ extension ScreenAwarenessService: ScreenStepPerforming {
 
     func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {
         try await scrollContent(direction, ticks: ticks, at: point)
+    }
+
+    func settle(within seconds: Double) async {
+        guard seconds > 0 else { return }
+        await settleScreen(within: .seconds(seconds))
     }
 
     func idle(_ seconds: Double) async throws {

@@ -34,6 +34,10 @@ private struct TransparentWindowConfigurator: NSViewRepresentable {
 }
 
 struct ContentView: View {
+    /// Swaps the expanded window's conversation area for the scheduled-checks
+    /// dashboard.
+    @State private var showScheduleDashboard = false
+
     @EnvironmentObject private var viewModel: ChatViewModel
     // `SpeechService` is a nested ObservableObject on ChatViewModel, not one
     // of its `@Published` properties — reading `speech.X` here
@@ -177,7 +181,14 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.55)
-            conversation
+            // The dashboard takes the conversation's place rather than opening
+            // a sheet: a background check is something you glance at beside the
+            // chat, not something worth losing the chat to look at.
+            if showScheduleDashboard {
+                ScheduleDashboardView()
+            } else {
+                conversation
+            }
             if let plan = viewModel.pendingScreenPlan {
                 screenPlanBanner(plan)
             }
@@ -777,6 +788,16 @@ struct ContentView: View {
                     help: "Return to floating Clippy"
                 ) {
                     viewModel.setExpanded(false)
+                }
+                // Only in the expanded window: the compact balloon has no
+                // room to render a dashboard.
+                if viewModel.isExpanded {
+                    headerButton(
+                        showScheduleDashboard ? "bubble.left.and.bubble.right.fill" : "clock.badge.checkmark",
+                        help: showScheduleDashboard ? "Back to conversation" : "Scheduled checks"
+                    ) {
+                        showScheduleDashboard.toggle()
+                    }
                 }
                 headerButton("clock.arrow.circlepath", help: "Chat history") {
                     showHistory = true

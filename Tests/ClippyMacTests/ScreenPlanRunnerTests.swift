@@ -10,6 +10,7 @@ final class RecordingPerformer: ScreenStepPerforming {
         case type(text: String, target: String)
         case press(ScreenPlanKey)
         case scroll(ScreenScrollDirection, ticks: Int, point: CGPoint?)
+        case settle(Double)
         case idle(Double)
     }
 
@@ -39,11 +40,18 @@ final class RecordingPerformer: ScreenStepPerforming {
         calls.append(.scroll(direction, ticks: ticks, point: point))
     }
 
+    func settle(within seconds: Double) async { calls.append(.settle(seconds)) }
+
     func idle(_ seconds: Double) async throws { calls.append(.idle(seconds)) }
 
     /// Everything except the settle pauses the runner inserts between steps.
     var actions: [Call] {
-        calls.filter { if case .idle = $0 { return false } else { return true } }
+        calls.filter {
+            switch $0 {
+            case .idle, .settle: return false
+            default: return true
+            }
+        }
     }
 }
 
@@ -86,7 +94,7 @@ final class ScreenPlanRunnerTests: XCTestCase {
             ScreenPlanStep(action: .click, target: "Three")
         ]))
 
-        XCTAssertEqual(performer.calls.filter { $0 == .idle(0.25) }.count, 2)
+        XCTAssertEqual(performer.calls.filter { $0 == .settle(0.25) }.count, 2)
         XCTAssertEqual(performer.calls.last, .click("Three"))
     }
 

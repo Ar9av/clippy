@@ -225,7 +225,9 @@ public final class ScreenAgent {
             consecutiveFailures = 0
             executedCount += 1
             onEvent(.stepSucceeded(step))
-            try? await Task.sleep(nanoseconds: config.settleMilliseconds(step) * 1_000_000)
+            // The observation that follows must see a finished interface, so
+            // wait for quiet rather than for a guessed duration.
+            await performer.settle(within: Double(config.settleMilliseconds(step)) / 1000)
             let followUp = try await userTurn(goal: nil, isFirst: false, priorStep: step, failureReason: nil, toolUseId: toolUseId)
             transcript.append(followUp)
             return nil

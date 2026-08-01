@@ -36,6 +36,10 @@ public protocol ScreenStepPerforming: AnyObject {
     /// need it get a default that does nothing, so a test double or a
     /// non-scrolling performer stays source-compatible.
     func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws
+    /// Waits for the interface to stop changing, giving up after `seconds`.
+    /// Conformers that can't observe the screen get a default that simply
+    /// sleeps, preserving the old fixed-delay behaviour.
+    func settle(within seconds: Double) async
     func idle(_ seconds: Double) async throws
     /// Visually points out a control without clicking it — used by
     /// `ScreenAgent`'s `highlight_control` tool. Returns the resolved
@@ -63,6 +67,10 @@ extension ScreenStepPerforming {
     }
 
     public func scroll(_ direction: ScreenScrollDirection, ticks: Int, at point: CGPoint?) async throws {}
+
+    public func settle(within seconds: Double) async {
+        try? await Task.sleep(for: .seconds(seconds))
+    }
 }
 
 public enum ScreenPlanError: LocalizedError, Equatable {
@@ -258,8 +266,10 @@ public final class ScreenPlanRunner {
 
             // No settle after the last step, and none after an explicit wait —
             // the plan already said how long to pause there.
+            // Wait for the interface to go quiet rather than for a fixed
+            // pause — an app that repaints in 40ms should not cost 450.
             if index < total - 1, step.action != .wait, settleSeconds > 0 {
-                try await performer.idle(settleSeconds)
+                await performer.settle(within: settleSeconds)
             }
         }
         return completed

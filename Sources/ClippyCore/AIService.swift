@@ -414,7 +414,7 @@ public enum AIService {
         )
         switch provider {
         case .claudeCLI:
-            return try await runClaude(prompt: prompt)
+            return try await runClaude(prompt: prompt, attachments: attachments)
         case .codexCLI:
             return try await runCodex(
                 prompt: prompt,
@@ -471,16 +471,44 @@ public enum AIService {
         """
     }
 
-    private static func runClaude(prompt: String) async throws -> String {
+    private static func runClaude(prompt: String, attachments: [URL]) async throws -> String {
         guard let executable = findExecutable(named: "claude") else {
             throw ClippyError.missingCLI("Claude Code")
         }
+        var arguments = ["-p", prompt, "--output-format", "text"]
+        // Attachments are handed to this CLI as paths for it to open itself,
+        // and they live outside its working directory — screenshots in
+        // Caches/Clippy/ScreenContext, pasted files in PastedAttachments.
+        // Reading outside the workspace needs approval, and `-p` is
+        // non-interactive so it cannot ask: the read is refused and Clippy
+        // reports it cannot see the screen. Granting exactly the directories
+        // whose files were actually attached is what makes them readable,
+        // without widening access to anything else.
+        for directory in attachmentDirectories(attachments) {
+            arguments.append(contentsOf: ["--add-dir", directory])
+        }
         let result = try await runProcess(
             executable: executable,
-            arguments: ["-p", prompt, "--output-format", "text"],
+            arguments: arguments,
             currentDirectory: FileManager.default.temporaryDirectory
         )
         return try checkedOutput(result)
+    }
+
+    /// The distinct parent directories of `attachments`, in a stable order.
+    /// Deliberately the containing directories rather than the files: the CLI
+    /// grants access by directory, and one entry per capture would otherwise
+    /// grow the argument list without bound across a long session.
+    static func attachmentDirectories(_ attachments: [URL]) -> [String] {
+        var seen = Set<String>()
+        var directories: [String] = []
+        for attachment in attachments {
+            let directory = attachment.deletingLastPathComponent()
+                .standardizedFileURL.path
+            guard !directory.isEmpty, seen.insert(directory).inserted else { continue }
+            directories.append(directory)
+        }
+        return directories
     }
 
     private static func runCodex(prompt: String, attachments: [URL]) async throws -> String {

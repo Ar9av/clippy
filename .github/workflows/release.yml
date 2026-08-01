@@ -1,0 +1,94 @@
+name: Release DMG
+
+# Publishes the universal DMG as a release asset. Runs when a release is
+# published, and can be run by hand against any ref to check the packaging
+# without cutting a release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      upload_to_tag:
+        description: "Optional existing tag to attach the DMG to (leave blank to only build)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Apple-silicon runner. The build produces both slices regardless, but the
+    # test run below exercises the arch the app is mostly used on.
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # Dependencies dominate a cold build; keying on Package.resolved means the
+      # cache is reused until a dependency actually changes.
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
+
+      - name: Test
+        run: swift test
+
+      # The offline eval replays recorded fixtures, so it needs no API key and
+      # is deterministic in CI. It is the safety-suite regression gate.
+      - name: Safety eval
+        run: swift run clippy-eval --offline
+
+      # Without a Developer ID in secrets the script falls back to ad-hoc
+      # signing, which still produces a working DMG — it just shows a Gatekeeper
+      # warning on first open. Set CODESIGN_IDENTITY (plus the cert in the
+      # keychain) to sign it properly.
+      - name: Build DMG
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: |
+          chmod +x scripts/build-dmg.sh
+          ./scripts/build-dmg.sh
+
+      # The whole point of the DMG is that it runs on both architectures, and a
+      # missing slice is otherwise only discovered by an Intel user.
+      - name: Verify universal binary
+        run: |
+          ARCHS="$(lipo -archs build/Clippy.app/Contents/MacOS/Clippy)"
+          echo "archs: $ARCHS"
+          for required in arm64 x86_64; do
+            case " $ARCHS " in
+              *" $required "*) ;;
+              *) echo "::error::DMG is missing the $required slice (got: $ARCHS)"; exit 1 ;;
+            esac
+          done
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clippy-macOS-universal
+          path: build/Clippy-macOS-universal.dmg
+          if-no-files-found: error
+
+      - name: Attach DMG to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            build/Clippy-macOS-universal.dmg --clobber
+
+      - name: Attach DMG to a tag chosen by hand
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_to_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.upload_to_tag }}" \
+            build/Clippy-macOS-universal.dmg --clobber
