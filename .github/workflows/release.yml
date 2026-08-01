@@ -18,16 +18,24 @@ permissions:
 
 jobs:
   build:
-    # Apple-silicon runner. The build produces both slices regardless, but the
-    # test run below exercises the arch the app is mostly used on.
-    runs-on: macos-14
+    # macos-15 for the toolchain, not the hardware: a transitive dependency
+    # (swift-argument-parser 1.8.2, via WhisperKit) declares Swift tools 6.0,
+    # and the macos-14 image ships Swift 5.10, which fails at resolve time.
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
+      # Pin explicitly rather than trusting the image default, so a runner
+      # image update cannot silently drop the toolchain back below 6.0.
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+
       - name: Show toolchain
-        run: swift --version
+        run: |
+          swift --version
+          swift package tools-version
 
       # Dependencies dominate a cold build; keying on Package.resolved means the
       # cache is reused until a dependency actually changes.
