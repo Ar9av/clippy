@@ -43,6 +43,33 @@ enum LocalActionService {
         .map { $0 }
     }
 
+    /// Resumes a finished session and, when given one, hands it a first
+    /// message so the reply typed into Clippy's notification is what the CLI
+    /// picks up — rather than dropping the user into a bare prompt they then
+    /// have to retype into.
+    static func resume(_ handoff: SessionHandoff, message: String?) throws {
+        let executable = try executableURL(
+            named: handoff.provider == .codex ? "codex" : "claude"
+        )
+        let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let command: String
+        switch handoff.provider {
+        case .codex:
+            var parts = ["exec", shellQuote(executable.path), "resume",
+                         "-C", shellQuote(handoff.projectPath), shellQuote(handoff.id)]
+            if !trimmed.isEmpty { parts.append(shellQuote(trimmed)) }
+            command = parts.joined(separator: " ")
+        case .claude:
+            var resume = "exec \(shellQuote(executable.path)) --resume \(shellQuote(handoff.id))"
+            if !trimmed.isEmpty { resume += " \(shellQuote(trimmed))" }
+            command = "cd \(shellQuote(handoff.projectPath))\n" + resume
+        }
+        try launchTerminalCommand(
+            command,
+            name: "Resume-\(handoff.provider.rawValue)-\(handoff.id.prefix(8))"
+        )
+    }
+
     static func resume(_ session: CodingSession) throws {
         let executable = try executableURL(
             named: session.provider == .codex ? "codex" : "claude"

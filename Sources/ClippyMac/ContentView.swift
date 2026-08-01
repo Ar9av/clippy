@@ -148,6 +148,9 @@ struct ContentView: View {
             installPasteMonitor()
             installPushToTalkMonitor()
             publishBalloonVisibility()
+            // A session may have ended while Clippy was closed, so this both
+            // picks up what is already waiting and starts the poll.
+            viewModel.startWatchingForFinishedSessions()
             // Push-to-talk is unusable if the first hold spends its whole
             // duration loading the model: you speak, release, and nothing was
             // ever recorded. Warm it up at launch instead so the microphone
@@ -194,6 +197,9 @@ struct ContentView: View {
             }
             if let action = viewModel.pendingScreenAction {
                 screenActionBanner(action)
+            }
+            if let handoff = viewModel.pendingSessionHandoff {
+                sessionHandoffBanner(handoff)
             }
             if let error = viewModel.errorMessage {
                 errorBanner(error)
@@ -960,6 +966,53 @@ struct ContentView: View {
         .padding(11)
         .background(Color.orange.opacity(0.1))
         .padding(.horizontal, 14)
+    }
+
+    /// Shown when a Claude Code or Codex session ends: what happened, and a
+    /// reply box that reopens the session in Terminal with that message
+    /// already sent — so answering a finished session is one step, not a
+    /// context switch back to a terminal to retype it.
+    private func sessionHandoffBanner(_ handoff: SessionHandoff) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "terminal.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(handoff.provider.displayName) finished in \(handoff.projectName)")
+                        .font(.caption.weight(.semibold))
+                    Text(handoff.notificationText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 6)
+                Button {
+                    viewModel.dismissSessionHandoff()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Dismiss")
+            }
+            HStack(spacing: 6) {
+                TextField("Reply to continue in Terminal…", text: $viewModel.handoffReply)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit { viewModel.resumeSessionHandoff() }
+                Button("Continue") {
+                    viewModel.resumeSessionHandoff()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("Reopen this session in Terminal")
+            }
+        }
+        .padding(10)
+        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
     }
 
     private func screenActionBanner(_ action: PendingScreenAction) -> some View {

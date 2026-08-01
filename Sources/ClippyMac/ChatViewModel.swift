@@ -18,6 +18,11 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var recentSessions: [CodingSession] = []
     @Published private(set) var chatHistory: [ArchivedChatSession] = []
     @Published var pendingScreenAction: PendingScreenAction?
+    /// The most recently finished CLI session, waiting to be shown. Set by the
+    /// inbox poll below; cleared when dismissed or resumed.
+    @Published var pendingSessionHandoff: SessionHandoff?
+    /// What the user typed into that notification's reply box.
+    @Published var handoffReply: String = ""
     @Published var pendingScreenPlan: PendingScreenPlan? {
         didSet { ChatStore.savePendingPlan(pendingScreenPlan) }
     }
@@ -931,6 +936,64 @@ final class ChatViewModel: ObservableObject {
     /// bounds that so a genuinely stuck task still stops instead of retrying
     /// forever.
     private static let maxConsecutiveFailures = 3
+    // MARK: - Finished CLI sessions
+
+    private let sessionHandoffInbox = SessionHandoffInbox(
+        directory: SessionHandoffInbox.defaultDirectory()
+    )
+    private var sessionHandoffTimer: Timer?
+
+    /// Polls the handoff directory rather than watching it with FSEvents. The
+    /// inbox is written by a shell hook that may run while Clippy is closed, so
+    /// a poll on launch is needed regardless — and once that exists, a slow
+    /// tick is far less machinery than a file-system watcher for something
+    /// that arrives at most a few times an hour.
+    func startWatchingForFinishedSessions() {
+        checkForFinishedSessions()
+        guard sessionHandoffTimer == nil else { return }
+        sessionHandoffTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkForFinishedSessions() }
+        }
+    }
+
+    func stopWatchingForFinishedSessions() {
+        sessionHandoffTimer?.invalidate()
+        sessionHandoffTimer = nil
+    }
+
+    private func checkForFinishedSessions() {
+        // Don't interrupt a notification the user is part-way through replying
+        // to with a newer one.
+        guard pendingSessionHandoff == nil else { return }
+        guard let newest = sessionHandoffInbox.pending().first else { return }
+        pendingSessionHandoff = newest
+        handoffReply = ""
+        announce("\(newest.provider.displayName) finished in \(newest.projectName).")
+    }
+
+    /// Dismissing consumes it, so the same session is never announced twice.
+    func dismissSessionHandoff() {
+        guard let handoff = pendingSessionHandoff else { return }
+        sessionHandoffInbox.consume(id: handoff.id)
+        pendingSessionHandoff = nil
+        handoffReply = ""
+    }
+
+    /// Reopens the session in Terminal, handing it whatever was typed so the
+    /// reply is the first thing the CLI sees.
+    func resumeSessionHandoff() {
+        guard let handoff = pendingSessionHandoff else { return }
+        let message = handoffReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try LocalActionService.resume(handoff, message: message.isEmpty ? nil : message)
+            sessionHandoffInbox.consume(id: handoff.id)
+            pendingSessionHandoff = nil
+            handoffReply = ""
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     /// A model proposing the same action it just took — even one it
     /// succeeded at — twice in a row means re-observing isn't changing its
     /// mind, usually because it's judging from a screenshot taken before the
