@@ -13,6 +13,11 @@
 
 set -u
 
+# Clippy drives these CLIs itself, and every one of those is a session that
+# ends. Reporting them back would announce Clippy's own queries as finished
+# work; the variable is set by whatever Clippy spawns and inherited here.
+[ -n "${CLIPPY_INTERNAL:-}" ] && exit 0
+
 INBOX="$HOME/Library/Application Support/Clippy/SessionHandoffs"
 mkdir -p "$INBOX" 2>/dev/null || exit 0
 

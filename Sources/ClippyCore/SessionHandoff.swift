@@ -53,13 +53,33 @@ public struct SessionHandoff: Identifiable, Codable, Equatable {
         endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt) ?? Date()
     }
 
+    /// Whether this ran somewhere no real project lives.
+    public var ranInTemporaryDirectory: Bool {
+        let path = URL(fileURLWithPath: projectPath).standardizedFileURL.path
+        let temporary = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        return path.hasPrefix(temporary) || path.hasPrefix("/private/var/folders")
+            || path.hasPrefix("/var/folders") || path.hasPrefix("/tmp")
+    }
+
     /// The last path component of the project, which is what a person calls it.
     public var projectName: String {
         let name = URL(fileURLWithPath: projectPath).lastPathComponent
         return name.isEmpty ? "your project" : name
     }
 
-    /// What the balloon says. Kept to roughly one line, since the compact
+    /// What the floating balloon says. Much shorter than `notificationText`:
+    /// the balloon is narrow and wraps to a few lines before truncating
+    /// mid-word, so the summary is cut to what actually fits beside the
+    /// project name rather than spilling over.
+    public var balloonText: String {
+        // Headline only. Any amount of summary overflowed the balloon and got
+        // cut mid-word, which reads worse than not showing it: the point of
+        // this line is to say a session finished and which one, and the full
+        // summary is a click away in the window. Never truncates.
+        "\(provider.displayName) finished in \(projectName)."
+    }
+
+    /// What the full window says. Kept to roughly one line, since the compact
     /// balloon truncates anything longer anyway.
     public var notificationText: String {
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -126,6 +146,14 @@ public final class SessionHandoffInbox {
                 continue
             }
             guard now.timeIntervalSince(handoff.endedAt) <= Self.maximumAge else {
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
+            // Nobody's project lives in a temp directory, so a session that
+            // ran in one came from a tool driving the CLI rather than from
+            // work worth reporting. Covers handoffs written before the hook
+            // learned to skip them.
+            guard !handoff.ranInTemporaryDirectory else {
                 try? FileManager.default.removeItem(at: file)
                 continue
             }

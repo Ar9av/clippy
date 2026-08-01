@@ -752,6 +752,13 @@ public enum AIService {
                     var environment = ProcessInfo.processInfo.environment
                     environment["PATH"] = searchPaths().joined(separator: ":")
                     environment["TERM"] = "dumb"
+                    // Clippy talks to these CLIs constantly, and each call is a
+                    // session that ends. Without this the session-end hook
+                    // reports Clippy's own queries back to Clippy — a loop that
+                    // announces "Hey there! What can I help with?" as though a
+                    // coding session had just finished. The hook checks for this
+                    // and exits; it is inherited by whatever the CLI spawns.
+                    environment["CLIPPY_INTERNAL"] = "1"
                     process.environment = environment
 
                     do {

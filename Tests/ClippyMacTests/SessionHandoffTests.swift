@@ -119,3 +119,96 @@ final class SessionHandoffTests: XCTestCase {
         XCTAssertEqual(decoded.projectName, "proj")
     }
 }
+
+/// Clippy drives these CLIs itself, so its own calls end sessions too. Left
+/// unfiltered, the hook reported Clippy's own queries back to Clippy — the
+/// balloon announcing "Hey there! What can I help with?" as finished work.
+final class InternalSessionFilterTests: XCTestCase {
+    private var directory: URL!
+    private var inbox: SessionHandoffInbox!
+
+    override func setUp() {
+        super.setUp()
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("InternalFilter-\(UUID().uuidString)")
+        inbox = SessionHandoffInbox(directory: directory)
+    }
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: directory)
+        super.tearDown()
+    }
+
+    private func handoff(path: String) -> SessionHandoff {
+        SessionHandoff(id: UUID().uuidString, projectPath: path, summary: "did a thing")
+    }
+
+    func testASessionFromARealProjectIsReported() throws {
+        try inbox.write(handoff(path: "/Users/x/projects/clippy"))
+        XCTAssertEqual(inbox.pending().count, 1)
+    }
+
+    /// Clippy runs the CLI with the temp directory as its working directory,
+    /// which is how its own calls are recognisable after the fact.
+    func testASessionFromATemporaryDirectoryIsNotReported() throws {
+        let temporary = FileManager.default.temporaryDirectory.path
+        try inbox.write(handoff(path: temporary))
+        XCTAssertTrue(inbox.pending().isEmpty)
+    }
+
+    func testTheUsualTemporaryLocationsAreAllRecognised() {
+        for path in ["/var/folders/5c/abc/T/", "/private/var/folders/5c/abc/T/", "/tmp/x"] {
+            XCTAssertTrue(
+                handoff(path: path).ranInTemporaryDirectory,
+                "\(path) should not be reported as a project"
+            )
+        }
+        for path in ["/Users/x/projects/clippy", "/Users/x/Developer/app"] {
+            XCTAssertFalse(handoff(path: path).ranInTemporaryDirectory, path)
+        }
+    }
+
+    /// Filtered ones are deleted, not merely skipped, or they accumulate and
+    /// are re-examined on every poll.
+    func testFilteredSessionsAreCleanedUp() throws {
+        try inbox.write(handoff(path: FileManager.default.temporaryDirectory.path))
+        _ = inbox.pending()
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertTrue(remaining.isEmpty, "left behind: \(remaining)")
+    }
+}
+
+/// The floating balloon is narrow and wraps to a few lines before truncating
+/// mid-word, so its line is much shorter than the full window's.
+final class BalloonTextTests: XCTestCase {
+    private func handoff(_ summary: String) -> SessionHandoff {
+        SessionHandoff(id: "s", projectPath: "/Users/x/projects/clippy-mac", summary: summary)
+    }
+
+    /// However long the summary, the balloon line is the headline alone — a
+    /// line cut mid-word reads worse than one that simply says what finished.
+    func testBalloonLineNeverTruncatesHoweverLongTheSummaryIs() {
+        for summary in [
+            "short",
+            "Fixed the session-handoff notification: it now renders in the floating balloon rather than only the expanded window.",
+            String(repeating: "very long summary text ", count: 50)
+        ] {
+            let text = handoff(summary).balloonText
+            XCTAssertEqual(text, "Claude Code finished in clippy-mac.", text)
+            XCTAssertFalse(text.contains("…"), "balloon line must never be cut: \(text)")
+        }
+    }
+
+    /// The balloon line is a strict subset of what the full window shows.
+    func testBalloonLineIsShorterThanTheWindowLine() {
+        let long = String(repeating: "refactored the runner ", count: 20)
+        XCTAssertLessThan(
+            handoff(long).balloonText.count,
+            handoff(long).notificationText.count + 40
+        )
+    }
+
+    func testAnEmptySummaryStillNamesTheProject() {
+        let text = handoff("  ").balloonText
+        XCTAssertEqual(text, "Claude Code finished in clippy-mac.")
+    }
+}

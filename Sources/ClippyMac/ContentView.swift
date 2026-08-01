@@ -272,6 +272,10 @@ struct ContentView: View {
 
     private var classicBalloon: some View {
         VStack(alignment: .leading, spacing: 11) {
+            // The balloon is the surface a notification should appear on — it
+            // is what is on screen when you are not in the full window, which
+            // is exactly when a terminal session finishing is worth telling
+            // you about.
             HStack(alignment: .top, spacing: 8) {
                 Text(compactStatusMessage)
                     .font(.system(size: 13, weight: .regular))
@@ -444,6 +448,17 @@ struct ContentView: View {
             case .home:
                 // Rows, their wording, and their order all come from Settings;
                 // the behaviour behind each is fixed by its `kind`.
+                // A finished session gets its own row above the usual ones,
+                // because the balloon's rows are the only controls that
+                // reliably fit at this size — a reply field does not.
+                if let handoff = viewModel.pendingSessionHandoff {
+                    ClassicOptionButton("Continue \(handoff.projectName) in Terminal") {
+                        viewModel.resumeSessionHandoff()
+                    }
+                    ClassicOptionButton("Dismiss this") {
+                        viewModel.dismissSessionHandoff()
+                    }
+                }
                 ForEach(viewModel.visibleBalloonActions) { action in
                     balloonRow(action)
                 }
@@ -723,6 +738,13 @@ struct ContentView: View {
     }
 
     private var compactStatusMessage: String {
+        // A finished session outranks the idle greeting: the balloon's text is
+        // the one surface guaranteed to be visible at the balloon's size, so
+        // the notification goes here rather than only into an extra banner
+        // that the balloon's layout may not have room to show.
+        if let handoff = viewModel.pendingSessionHandoff {
+            return handoff.balloonText
+        }
         if let error = viewModel.errorMessage {
             return "I couldn’t finish that: \(error)"
         }
