@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Resources/ClippyIcon.png" width="130" alt="Clippy icon" />
 
-  # Clippy for macOS
+  # Clippy for macOS (on steroids)
 
   ### The paperclip grew up. It can see your screen now — and click things.
 
