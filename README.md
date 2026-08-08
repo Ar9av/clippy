@@ -1,52 +1,102 @@
 <div align="center">
-  <img src="Resources/ClippyIcon.png" width="140" alt="Clippy icon" />
+  <img src="Resources/ClippyIcon.png" width="130" alt="Clippy icon" />
 
   # Clippy for macOS
 
-  **A native macOS desktop assistant that can actually see your screen and act on it.**
+  ### The paperclip grew up. It can see your screen now — and click things.
 
-  Chat through your existing Claude Code or Codex login, or bring your own
-  OpenAI or Anthropic API key. Ask it to do something on screen and it takes
-  a screenshot, reads the accessibility tree of whatever is in front of you,
-  and acts, instead of just describing the steps back to you.
+  Ask it to do something on your Mac and it takes a screenshot, reads the
+  accessibility tree of whatever's in front of you, and **does it** — instead
+  of describing the steps back to you and leaving you to click.
 
-  ![platform](https://img.shields.io/badge/platform-macOS%2014%2B-black?logo=apple)
+  [![Download](https://img.shields.io/github/v/release/Ar9av/clippy?label=Download%20the%20DMG&style=for-the-badge&color=0b7285)](https://github.com/Ar9av/clippy/releases/latest)
+
+  ![platform](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
   ![swift](https://img.shields.io/badge/swift-5.10-F05138?logo=swift&logoColor=white)
   ![universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue)
+  ![tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)
+  ![safety eval](https://img.shields.io/badge/safety%20eval-12%2F12-brightgreen)
+
+  <br />
+
+  <img src="Resources/clippy-on-desktop.jpg" width="820" alt="Clippy floating over a Claude Code window, its balloon reading: Looks like you're chatting in Claude — so you're building me!" />
+
+  <sub><i>Clippy, live on the desktop, working out what you're doing from what's on screen.</i></sub>
 </div>
 
-## About
+---
 
-Most "AI desktop assistant" demos stop at chat: you ask a question, it
-answers, and you still do the clicking yourself. This project started from
-wanting something that could actually reach into the app in front of me,
-click the right control, type into the right field, and know when to stop
-and ask instead of guessing.
+## Why you'd want this
 
-The name and the paperclip are a nod to Microsoft's old Office Assistant.
-Everything else, the screen reasoning, the safety checks, the retry logic,
-is original.
+Most "AI desktop assistant" demos stop at chat: you ask, it answers, and
+**you** still do the clicking. Clippy closes that last gap. It's the
+difference between:
 
-It's a solo side project, developed and rebuilt in public commits as bugs
-turned up from actually using it day to day. Most of the interesting work
-is in getting the automation to fail safely: a step that can't find its
-target should stop and ask, not click something at random.
+> *"To turn on Dark Mode, open System Settings, click Appearance in the
+> sidebar, then choose Dark."*
 
-## What it actually does
+and Clippy just **doing it** while you watch the checklist tick over.
 
-Clippy sits as a small floating character on your desktop. Ask it something
-and it answers in a compact speech balloon, or open the full chat for longer
-conversations, spoken replies, and file attachments: the classic assistant
-experience, minus the 90s bugs.
+It lives as a small floating paperclip on your desktop: short answers come
+back in the speech balloon, and the full chat window opens underneath it for
+longer conversations, spoken replies, dictation, and file attachments. The
+classic assistant experience, minus the 90s bugs.
 
-The part that's new: when you ask it to *do* something on screen, it doesn't
-just describe the steps back to you. It takes a screenshot, reads the
-accessibility tree of whatever's in front of you, and acts:
+### Things you can actually say to it
 
-- **Sees your screen on every request.** A fresh screenshot and an
-  accessibility scan (control labels, roles, positions, and each control's
-  current state) go to the model with every message, so it can reason about
-  what's actually in front of you instead of guessing.
+| You say | What happens |
+| --- | --- |
+| *"turn on dark mode"* | Opens System Settings, finds Appearance, clicks Dark. |
+| *"search GitHub for swift accessibility"* | Focuses the browser's address bar, types, submits. |
+| *"what does this error mean?"* | Reads the error off your screen and explains it. No copy-paste. |
+| *"reply to this"* | Reads the visible conversation, drafts a reply into the box — **never sends it**. |
+| *"put that in the prompt box"* | Types the thing you just discussed into the field you meant. |
+| *"summarise this page"* | Scrolls, reads, answers in the balloon. |
+| *"write a haiku about paperclips"* | Just answers — no screenshot taken, streams in instantly. |
+
+> [!IMPORTANT]
+> Clippy stops before anything **irreversible**. Send, Submit, buy, pay,
+> delete, agree, and every password field are refused unconditionally — it
+> gets you to the last step and hands you the keyboard. See
+> [Guardrails](#guardrails).
+
+## Install
+
+1. **[Download the latest DMG](https://github.com/Ar9av/clippy/releases/latest)** — one universal build, Apple Silicon and Intel.
+2. Open it, drag Clippy to Applications.
+3. First launch: right-click ▸ **Open** (the build is ad-hoc signed, so Gatekeeper warns once).
+4. Grant **Accessibility** and **Screen Recording** when asked. Without them Clippy still chats, it just can't see or act.
+
+Then pick how it thinks, in Settings: your existing **Claude Code** or
+**Codex** login (no extra key needed), or your own **OpenAI** / **Anthropic**
+API key, stored in the macOS Keychain.
+
+## How it works
+
+Every screen request runs the same loop, one step at a time:
+
+```
+ look  ──▶  plan one step  ──▶  do it  ──▶  look again  ──▶  done?
+   ▲                                                          │
+   └──────────────  no: what changed? re-plan  ◀──────────────┘
+```
+
+It never builds a ten-step plan up front and runs it blind — a real screen
+rarely matches a prediction, and looking again after every action is how
+Clippy notices.
+
+<details>
+<summary><b>The details that make it work</b> (click to expand)</summary>
+
+<br />
+
+- **Looks when it matters, and only then.** A request that could be about
+  your screen gets a fresh screenshot plus an accessibility scan — control
+  labels, roles, positions, and each control's current state. A
+  self-contained question ("explain tail recursion") skips the capture
+  entirely and streams the answer instead. If a skipped look turns out to
+  have been needed, Clippy notices from its own answer and retries with real
+  screen context, so a miss costs a second, not a wrong answer.
 - **Reads state, not just labels.** Every control reports what's already in
   it — the text sitting in a field, whether a checkbox is on or off, what
   currently has keyboard focus. That's what stops it retyping a search box
@@ -57,10 +107,6 @@ accessibility tree of whatever's in front of you, and acts:
   a control that doesn't exist. Clippy can scroll and look again — a few
   ticks at a time, re-observing between them — instead of concluding the
   target isn't there.
-- **Plans and re-plans, one step at a time.** Clippy doesn't build a
-  10-step plan up front and run it blind. It runs one action, takes a new
-  screenshot, and asks "given what just happened, what's next?" A screen
-  rarely matches a prediction exactly, and this is how Clippy notices.
 - **Retries on its own.** A failed step (wrong label, a menu that opened
   somewhere else) triggers an automatic retry from a fresh screenshot,
   bounded to a few consecutive attempts before it stops and asks you.
@@ -75,6 +121,24 @@ accessibility tree of whatever's in front of you, and acts:
 - **Shows its work.** Every plan runs through a live checklist (✓ done,
   ✗ failed, • pending) and, once it finishes, gets posted to the chat
   transcript as a permanent record of what actually happened.
+- **Remembers you.** Tell it your name, what you're building, or how you
+  like answers, and it carries that across chats and relaunches instead of
+  asking again on Monday. Everything it has stored is listed verbatim in
+  Settings ▸ *What Clippy remembers*, and deletable one line at a time —
+  memory you can't see is memory you can't correct.
+
+</details>
+
+## The name
+
+The paperclip is a nod to Microsoft's old Office Assistant. Everything
+else — the screen reasoning, the safety checks, the retry logic — is
+original.
+
+It's a solo side project, rebuilt in public commits as bugs turned up from
+using it day to day. Most of the interesting work is in getting the
+automation to **fail safely**: a step that can't find its target should stop
+and ask, not click something at random.
 
 ## Project structure
 
@@ -102,6 +166,8 @@ Sources/
     LocalActionService.swift     Discovers local Claude Code and Codex sessions to resume.
     ClippyMacApp.swift           App entry point, window configuration, permissions bootstrap.
     ChatStore.swift              Conversation, history, and pending-plan persistence.
+    MemoryStore.swift            Durable facts about you, carried across chats and relaunches.
+    AmbientContext.swift         Time, day, and frontmost app — awareness that costs no screenshot.
     SpeechService.swift          Dictation and spoken replies, including the optional local Whisper engine.
     ListeningIndicatorView.swift Animated waveform and pulse shown while dictation is listening.
     PushToTalkMonitor.swift      Hold-to-talk chord tracking for both dictation routes.
@@ -143,9 +209,10 @@ scripts/build-dmg.sh             Universal-binary build, code signing, and DMG p
   Recording** permission granted in System Settings. Clippy prompts for both
   the first time it needs them.
 
-## Build the DMG
+## Build it yourself
 
-Requirements: macOS 14+, Xcode command-line tools, and Swift 5.10+.
+Prefer not to trust a stranger's DMG? Fair. Requirements: macOS 14+, Xcode
+command-line tools, and Swift 5.10+.
 
 ```bash
 chmod +x scripts/build-dmg.sh
@@ -170,10 +237,16 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build
 Then notarize the resulting DMG with your Apple Developer credentials and
 staple the ticket.
 
-Run the test suite with:
+Published releases are built the same way by
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which runs
+the tests and the offline safety eval first and refuses to ship a DMG that
+lost either architecture slice.
+
+Run the checks yourself with:
 
 ```bash
-swift test
+swift test                    # 280 unit tests
+swift run clippy-eval --offline   # replays recorded screens; safety regression gate
 ```
 
 ## Provider setup
