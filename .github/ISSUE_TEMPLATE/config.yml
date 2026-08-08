@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Ar9av/clippy/security/advisories/new
+    about: >
+      Report privately instead of opening an issue — especially anything that
+      makes Clippy operate a control it should refuse.

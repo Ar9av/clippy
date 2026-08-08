@@ -1,0 +1,33 @@
+name: Feature request
+description: Something you want Clippy to be able to do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd want to say to it
+      description: >
+        The most useful framing is the sentence you'd type into the balloon,
+        and what you'd expect to happen.
+      placeholder: |
+        "move these screenshots to a folder called receipts" — and it does it
+        in Finder rather than telling me how.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why the current behaviour isn't enough
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Does this involve an action Clippy currently refuses?
+      description: >
+        Send, submit, buy, pay, delete, agree, sign out, and password fields
+        are refused unconditionally, by design. Requests to loosen that need a
+        much stronger case than requests to add new abilities, so say so up
+        front if this is one.

@@ -1,0 +1,66 @@
+name: CI
+
+# Runs on every push and pull request. The release workflow repeats these
+# checks before it packages a DMG, but by then a break is already tagged —
+# this is the one that catches it while it is still a commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macos-15 for the toolchain, not the hardware: a transitive dependency
+    # (swift-argument-parser 1.8.2, via WhisperKit) declares Swift tools 6.0,
+    # and the macos-14 image ships Swift 5.10, which fails at resolve time.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          swift package tools-version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
+
+      # The runner's python3 is Homebrew-managed, so PEP 668 refuses a plain
+      # `pip3 install`. A throwaway venv on GITHUB_PATH gives every later step
+      # the `python3` the compiler asks for.
+      - name: Set up Python for the policy compiler
+        run: |
+          python3 -m venv "$RUNNER_TEMP/policy-venv"
+          "$RUNNER_TEMP/policy-venv/bin/pip" install --quiet pyyaml
+          echo "$RUNNER_TEMP/policy-venv/bin" >> "$GITHUB_PATH"
+
+      # The app reads the compiled JSON, not the YAML, so a policy edit that
+      # skipped the compile step would ship a guardrail that silently doesn't
+      # match what the source of truth says. Recompile and fail on any diff.
+      - name: Check the Prismor policy is compiled
+        run: |
+          ./scripts/compile-policy.sh
+          git diff --exit-code Sources/ClippyCore/Resources/prismor-policy.json \
+            || { echo "::error::prismor-policy.json is stale — run ./scripts/compile-policy.sh"; exit 1; }
+
+      - name: Test
+        run: swift test
+
+      # The offline eval replays recorded fixtures, so it needs no API key and
+      # is deterministic in CI. It is the safety-suite regression gate.
+      - name: Safety eval
+        run: swift run clippy-eval --offline

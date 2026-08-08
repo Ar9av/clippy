@@ -14,7 +14,7 @@
   ![platform](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
   ![swift](https://img.shields.io/badge/swift-5.10-F05138?logo=swift&logoColor=white)
   ![universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue)
-  ![tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)
+  [![CI](https://github.com/Ar9av/clippy/actions/workflows/ci.yml/badge.svg)](https://github.com/Ar9av/clippy/actions/workflows/ci.yml)
   ![safety eval](https://img.shields.io/badge/safety%20eval-12%2F12-brightgreen)
 
   <br />
@@ -139,49 +139,6 @@ It's a solo side project, rebuilt in public commits as bugs turned up from
 using it day to day. Most of the interesting work is in getting the
 automation to **fail safely**: a step that can't find its target should stop
 and ask, not click something at random.
-
-## Project structure
-
-```
-Sources/
-  ClippyCore/                    Shared library: providers, prompts, safety. No UI, no AppKit.
-    AIService.swift              Provider-agnostic prompt building and response marker parsing.
-    AnthropicClient.swift        Real Anthropic tool-use client with streaming.
-    Models.swift                 ChatMessage, ScreenPlanStep, PendingScreenPlan, and friends.
-    ScreenPlanRunner.swift       Runs a validated plan step by step against ScreenStepPerforming.
-    ScreenAgent.swift            Observe, act, verify loop for tool-use screen intent.
-    AIProviding.swift            AIProviding protocol plus the CLI-backed and API-backed providers.
-    ClippyTools.swift            Tool-use schema definitions for model-driven screen actions.
-    ScreenTypes.swift            ScreenContext, ScreenElementSummary, and screenshot metadata.
-    AutomationSafety.swift       Final-action refusal list: send, submit, pay, delete, and so on.
-    CoordinateSpace.swift        Shared math for correcting model-supplied screen points.
-    KeychainStore.swift          API key storage.
-    SystemPrompt.swift           Shared system prompt text.
-
-  ClippyMac/                     The app: SwiftUI, AppKit, macOS Accessibility.
-    ContentView.swift            The floating balloon, expanded chat window, and Settings.
-    ScreenAwarenessService.swift Accessibility-tree scanning, clicking, and typing.
-    ChatViewModel.swift          Central state machine driving every request and screen action.
-    ScreenTypingService.swift    Live-tracks the last focused editable field for direct insertion.
-    LocalActionService.swift     Discovers local Claude Code and Codex sessions to resume.
-    ClippyMacApp.swift           App entry point, window configuration, permissions bootstrap.
-    ChatStore.swift              Conversation, history, and pending-plan persistence.
-    MemoryStore.swift            Durable facts about you, carried across chats and relaunches.
-    AmbientContext.swift         Time, day, and frontmost app — awareness that costs no screenshot.
-    SpeechService.swift          Dictation and spoken replies, including the optional local Whisper engine.
-    ListeningIndicatorView.swift Animated waveform and pulse shown while dictation is listening.
-    PushToTalkMonitor.swift      Hold-to-talk chord tracking for both dictation routes.
-    CustomPrompt.swift           User-defined slash commands and their parsing.
-    BalloonAction.swift          The balloon menu's rows, ordering, and visibility.
-    OnboardingView.swift         First-run permissions primer.
-    PermissionsModel.swift       Live Accessibility and Screen Recording permission state.
-    ClippySpriteView.swift       Sprite-sheet animation and the floating character's on-screen look.
-
-  ClippyEval/                    Offline regression harness for the tool-use screen-intent path.
-
-Tests/ClippyMacTests/            Unit tests: plan running, tool-use parsing, safety, persistence.
-scripts/build-dmg.sh             Universal-binary build, code signing, and DMG packaging.
-```
 
 ## Guardrails
 
@@ -353,5 +310,13 @@ user's macOS Keychain.
 
 ## Contributing
 
-PRs welcome. If you're using Claude Code or a similar agent, it can read this
-whole codebase in one pass; just point it at what you want changed.
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the two checks
+CI runs, and what changing a guardrail involves. If you're using Claude Code or
+a similar agent, it can read this whole codebase in one pass; just point it at
+what you want changed.
+
+Found a way to make Clippy operate a control it should refuse? That's the bug
+class this project cares most about — report it privately via
+[SECURITY.md](SECURITY.md).
+
+Release notes are in [CHANGELOG.md](CHANGELOG.md).

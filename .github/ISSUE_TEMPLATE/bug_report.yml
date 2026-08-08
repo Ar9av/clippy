@@ -1,0 +1,59 @@
+name: Bug report
+description: Something Clippy did wrong, or refused to do that it should have done.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you asked Clippy to do, and what it did instead.
+      placeholder: |
+        I said "turn on dark mode". It opened System Settings and then stopped,
+        saying it couldn't find Appearance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: checklist
+    attributes:
+      label: The plan checklist
+      description: >
+        Clippy posts every finished plan to the chat transcript with what
+        succeeded and what failed. Paste it here — it's the single most useful
+        thing for diagnosing a screen automation bug.
+      render: text
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - Claude Code
+        - Codex
+        - Anthropic API
+        - OpenAI API
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Clippy version
+      description: From the DMG you installed, or the commit you built from.
+      placeholder: "v0.1.1"
+
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permissions
+      options:
+        - label: Accessibility is granted in System Settings
+        - label: Screen & System Audio Recording is granted in System Settings
