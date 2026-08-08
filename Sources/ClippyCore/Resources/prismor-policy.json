@@ -67,6 +67,7 @@
         "\\bpasscode\\b",
         "\\bconfirm\\b",
         "\\bcheckout\\b",
+        "\\bsubscribe\\b",
         "place order",
         "sign out",
         "log out"

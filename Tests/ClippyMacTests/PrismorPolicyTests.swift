@@ -135,4 +135,12 @@ extension PrismorPolicyTests {
         XCTAssertFalse(AutomationSafety.isFinalAction("Unsend"))
         XCTAssertFalse(AutomationSafety.isFinalAction("Sender name"))
     }
+
+    /// Subscribing is a paid commitment as often as not, and always hands an
+    /// address to someone. Undoing one is not.
+    func testSubscribeIsRefusedButUnsubscribeIsNot() {
+        XCTAssertTrue(AutomationSafety.isFinalAction("Subscribe"))
+        XCTAssertTrue(AutomationSafety.isFinalAction("Subscribe now — $9/mo"))
+        XCTAssertFalse(AutomationSafety.isFinalAction("Unsubscribe"))
+    }
 }

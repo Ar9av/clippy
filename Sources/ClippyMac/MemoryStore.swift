@@ -23,7 +23,12 @@ enum MemoryStore {
     /// this, the oldest fact is dropped.
     private static let limit = 40
 
-    private static let url: URL = SupportDirectory.url(for: "memory.json")
+    /// Computed rather than resolved once, so `SupportDirectory.override`
+    /// takes effect for a caller that sets it after this type is first
+    /// touched — a `static let` would capture whichever directory happened to
+    /// be current at first use, which is the kind of order-dependence that
+    /// makes a suite flaky rather than wrong.
+    private static var url: URL { SupportDirectory.url(for: "memory.json") }
 
     static func load() -> [MemoryFact] {
         guard let data = try? Data(contentsOf: url),

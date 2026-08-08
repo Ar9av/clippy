@@ -71,6 +71,11 @@ rules:
       - '\bpasscode\b'
       - '\bconfirm\b'
       - '\bcheckout\b'
+      # "Subscribe" is often a paid commitment and always hands over an
+      # address to someone; either way it is the user's call, not Clippy's.
+      # "Unsubscribe" is deliberately not matched — it undoes one, and the
+      # word boundary already keeps it out.
+      - '\bsubscribe\b'
       - 'place order'
       - 'sign out'
       - 'log out'

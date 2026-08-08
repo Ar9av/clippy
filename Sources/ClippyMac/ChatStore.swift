@@ -7,9 +7,10 @@ import Foundation
 /// pre-existing UserDefaults value exactly once, then remove the key so the
 /// migration only ever runs a single time.
 enum ChatStore {
-    private static let messagesURL = SupportDirectory.url(for: "messages.json")
-    private static let historyURL = SupportDirectory.url(for: "history.json")
-    private static let pendingPlanURL = SupportDirectory.url(for: "pendingPlan.json")
+    // Computed, not resolved once: see the note on `MemoryStore.url`.
+    private static var messagesURL: URL { SupportDirectory.url(for: "messages.json") }
+    private static var historyURL: URL { SupportDirectory.url(for: "history.json") }
+    private static var pendingPlanURL: URL { SupportDirectory.url(for: "pendingPlan.json") }
 
     /// Deletes both store files outright, as opposed to saving an empty
     /// array to them — an empty-but-present file still decodes successfully
