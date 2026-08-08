@@ -17,7 +17,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// here so the pointer hit region and the drawn content stay in agreement.
     private static let compactBottomInset: CGFloat = 3
 
+    /// macOS only prevents a second launch of the *same* bundle, so an updated
+    /// copy in /Applications and an older one elsewhere both run happily under
+    /// one bundle identifier — two paperclips, two balloons, each acting on
+    /// the same screen and each writing the same files in Application Support.
+    /// Hand off to whichever got here first and leave.
+    ///
+    /// The self test is exempt: it drives a scratch document to completion and
+    /// exits, and it has to be runnable while an ordinary Clippy is up.
+    @MainActor
+    private func yieldToRunningInstance() -> Bool {
+        guard !ScreenPlanSelfTest.isRequested,
+              let bundleID = Bundle.main.bundleIdentifier else { return false }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        guard let existing = others.first else { return false }
+        existing.activate(options: [.activateAllWindows])
+        return true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if yieldToRunningInstance() {
+            NSApp.terminate(nil)
+            return
+        }
         if ScreenPlanSelfTest.isRequested {
             Task { await ScreenPlanSelfTest.run() }
             return

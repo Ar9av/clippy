@@ -378,6 +378,10 @@ final class ChatViewModel: ObservableObject {
                 // of asking a model to guess a target name.
                 if shouldBuildScreenPlan,
                    let capturedScreen,
+                   Self.destinationMismatch(
+                    request: history.last?.content ?? "",
+                    screen: capturedScreen
+                   ) == nil,
                    let textToInsert = Self.explicitTextToInsert(from: history.last?.content ?? ""),
                    let target = ScreenAwarenessService.shared.preferredEditableTarget(
                     in: capturedScreen.elements
@@ -592,6 +596,16 @@ final class ChatViewModel: ObservableObject {
                     // tracker. Fall back to that tracker only when no screen
                     // was captured (e.g. screen-recording permission denied).
                     if let capturedScreen,
+                       let mismatch = Self.destinationMismatch(
+                        request: lastUserRequestText ?? "",
+                        screen: capturedScreen
+                       ) {
+                        // Naming a destination and getting a different one is
+                        // worse than getting nothing: the user believes their
+                        // text went somewhere it didn't.
+                        screenStatus = mismatch
+                        finishActivity(message: mismatch)
+                    } else if let capturedScreen,
                        let target = ScreenAwarenessService.shared.preferredEditableTarget(
                         in: capturedScreen.elements
                        ) {
@@ -792,6 +806,63 @@ final class ChatViewModel: ObservableObject {
     func forgetEverything() {
         MemoryStore.forgetAll()
         memories = []
+    }
+
+    /// The destination a request names outright — "into the clippy-precious
+    /// document", "in the Untitled TextEdit window". Nil when the user named
+    /// nothing in particular, which is the common case and leaves target
+    /// selection exactly as it was.
+    nonisolated static func namedDestination(in request: String) -> String? {
+        let pattern = #"(?i)\b(?:into|in|on|to)\s+(?:the\s+|my\s+)?([\w .'-]{2,60}?)\s*\b(?:document|window|file|note|doc|tab)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: request, range: NSRange(request.startIndex..., in: request)),
+              let range = Range(match.range(at: 1), in: request) else {
+            return nil
+        }
+        let named = String(request[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return named.isEmpty ? nil : named
+    }
+
+    /// The message to show when the request named a destination Clippy isn't
+    /// looking at, or nil when there's nothing to object to. Naming the window
+    /// it *is* looking at is the point — "I couldn't find it" leaves the user
+    /// guessing which of their windows Clippy considered.
+    nonisolated static func destinationMismatch(request: String, screen: ScreenContext) -> String? {
+        guard let named = namedDestination(in: request),
+              !destination(named, matchesAppNamed: screen.appName, windowTitle: screen.windowTitle) else {
+            return nil
+        }
+        return "You asked for “\(named)”, but \(screen.windowTitle) is what's in front of me. "
+            + "Bring the right window forward and ask again."
+    }
+
+    /// Whether the window Clippy is actually looking at is the one the request
+    /// named.
+    ///
+    /// Clippy used to insert into whichever editable field scored highest in
+    /// the focused window, no matter what the user called it — asked for "the
+    /// Untitled TextEdit document" it typed into clippy-selftest.txt, and
+    /// (before the write path was fixed) overwrote it. Every distinctive word
+    /// of the named destination has to appear in the app name or window title;
+    /// "Untitled TextEdit" against a window called "clippy-selftest.txt"
+    /// matches "textedit" and fails on "untitled", which is the case that
+    /// caused the damage.
+    nonisolated static func destination(
+        _ named: String,
+        matchesAppNamed appName: String,
+        windowTitle: String
+    ) -> Bool {
+        let haystack = "\(appName) \(windowTitle)".lowercased()
+        let ignored: Set<String> = [
+            "the", "my", "a", "an", "this", "that", "current", "open", "front",
+            "active", "new", "app", "application"
+        ]
+        let tokens = named.lowercased()
+            .split { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "." }
+            .map(String.init)
+            .filter { $0.count >= 3 && !ignored.contains($0) }
+        guard !tokens.isEmpty else { return true }
+        return tokens.allSatisfy { haystack.contains($0) }
     }
 
     /// Whether a message could plausibly be about what's on screen — the gate

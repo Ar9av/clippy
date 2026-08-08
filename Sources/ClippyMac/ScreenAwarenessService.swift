@@ -776,10 +776,17 @@ final class ScreenAwarenessService {
         let preservesExisting = isDocument && !existing.isEmpty && existing != text
 
         if preservesExisting {
+            // A caret sitting at the very start or the very end is almost never
+            // a considered choice — it's just where the document opened, or
+            // where the last edit left it. Inserting flush against the existing
+            // text there produces "a second lineImportant draft…", so separate
+            // it with a newline. A caret in the middle is a real placement and
+            // is respected exactly.
+            let separated = Self.separated(text, forCaretIn: existing, at: caretOffset(of: resolved.element))
             if AXUIElementSetAttributeValue(
                 resolved.element,
                 kAXSelectedTextAttribute as CFString,
-                text as CFString
+                separated as CFString
             ) == .success,
                stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) == true {
                 highlightController.show(
@@ -857,6 +864,38 @@ final class ScreenAwarenessService {
                 label: "Text added — Clippy did not submit it"
             )
         }
+    }
+
+    /// The caret's character offset, or nil when the field exposes no
+    /// selection (some web composers). Nil callers fall back to treating the
+    /// insertion as mid-text, which is the least intrusive assumption.
+    private func caretOffset(of element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success, let value else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range.location
+    }
+
+    /// Adds a newline between `text` and what's already there when the caret
+    /// is at one end of the field, so an insertion doesn't run into the
+    /// existing words. Mid-text carets are deliberate placements and are left
+    /// exactly as they are.
+    nonisolated static func separated(_ text: String, forCaretIn existing: String, at offset: Int?) -> String {
+        guard !existing.isEmpty, let offset else { return text }
+        let atStart = offset <= 0
+        let atEnd = offset >= existing.count
+        if atStart {
+            return existing.hasPrefix("\n") ? text : text + "\n"
+        }
+        if atEnd {
+            return existing.hasSuffix("\n") ? text : "\n" + text
+        }
+        return text
     }
 
     /// Posted only after `AutomationSafety.isSafeAddressBarSubmit` has already
