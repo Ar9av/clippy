@@ -14,6 +14,7 @@
   ![platform](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
   ![swift](https://img.shields.io/badge/swift-5.10-F05138?logo=swift&logoColor=white)
   ![universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue)
+  [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
   [![CI](https://github.com/Ar9av/clippy/actions/workflows/ci.yml/badge.svg)](https://github.com/Ar9av/clippy/actions/workflows/ci.yml)
   ![safety eval](https://img.shields.io/badge/safety%20eval-12%2F12-brightgreen)
 
