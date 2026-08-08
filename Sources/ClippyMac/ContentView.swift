@@ -1806,6 +1806,42 @@ struct SettingsView: View {
                 .padding(8)
             }
 
+            // Memory the user can't see is memory they can't correct, so
+            // every stored fact is listed verbatim and individually
+            // removable rather than hidden behind a single on/off switch.
+            GroupBox("What Clippy remembers") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Durable facts picked up from your conversations, kept across chats so you don’t have to repeat yourself. Delete anything that’s wrong or that you’d rather it didn’t know.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.memories.isEmpty {
+                        Text("Nothing yet — it starts remembering once you tell it something about yourself.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(viewModel.memories) { fact in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(fact.text)
+                                    .font(.callout)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 8)
+                                Button {
+                                    viewModel.forget(fact)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Forget this")
+                                .accessibilityLabel("Forget: \(fact.text)")
+                            }
+                        }
+                        Button("Forget everything") { viewModel.forgetEverything() }
+                            .font(.caption)
+                    }
+                }
+                .padding(8)
+            }
+
             GroupBox("Balloon menu") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("The options offered by the floating paperclip. Rename them, reorder them, or untick ones you never use. Each row keeps what it does — only the wording is yours.")

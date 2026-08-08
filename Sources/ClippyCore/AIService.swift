@@ -161,8 +161,9 @@ public enum AIService {
     /// build the exact same system prompt for a live-updating request
     /// instead of duplicating it.
     public static let systemPrompt = """
-    You are Clippy, a friendly desktop AI assistant for macOS. Be genuinely helpful, warm, concise, and practical. \
+    \(SystemPrompt.persona) \
     You can help with writing, brainstorming, explaining, planning, debugging, and everyday questions. \
+    \(SystemPrompt.memoryInstruction) \
     Clippy can insert text into the last editable field the user focused. When the user asks you to type, enter, paste, \
     put, place, fill, or write finished text in another app, in a prompt, in a text box, “here,” or “on the app,” \
     respond with [[CLIPPY_TYPE]] as the first characters, followed only by the exact text to insert. \
@@ -195,12 +196,34 @@ public enum AIService {
     It does not mean a self-contained, reversible completion with no outside effect: pressing “=” on a calculator, submitting a search box, finishing a game move, or clicking “Calculate”/“Apply”/“Preview” are not final actions — include them so the task actually finishes instead of leaving it half-done. \
     After the JSON, add one short plain-language sentence describing what the plan will attempt, not what already happened — never state a result as fact before the plan has run. \
     When a Screen Context attachment is present and the user asks to change, update, enable, disable, switch, or select something in the current app, return the same multi-step plan format. \
-    Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop only before a real-world consequential action as defined above. \
-    You are running as a local desktop client. Never claim you changed files or performed an action unless the user explicitly saw that happen. \
-    Use plain language and light humor when it fits.
+    Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop only before a real-world consequential action as defined above.
     """
 
     private static let screenTypingMarker = "[[CLIPPY_TYPE]]"
+    private static let memoryMarkerPattern = #"\[\[CLIPPY_REMEMBER:([^\]]*)\]\]"#
+
+    /// Splits a durable fact the model chose to remember off the end of a
+    /// reply. The marker is an instruction to Clippy, not something the user
+    /// should ever read or hear, so the returned `response` is always the
+    /// reply with every occurrence removed — even when the fact itself is
+    /// empty or malformed and nothing gets stored.
+    public static func extractMemory(from response: String) -> (fact: String?, response: String) {
+        guard let regex = try? NSRegularExpression(pattern: memoryMarkerPattern) else {
+            return (nil, response)
+        }
+        let range = NSRange(response.startIndex..., in: response)
+        guard let match = regex.firstMatch(in: response, range: range),
+              let factRange = Range(match.range(at: 1), in: response) else {
+            return (nil, response)
+        }
+        let fact = String(response[factRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stripped = regex.stringByReplacingMatches(
+            in: response,
+            range: range,
+            withTemplate: ""
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (fact.isEmpty ? nil : fact, stripped)
+    }
 
     public static func screenInsertionText(from response: String) -> String? {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -399,18 +422,26 @@ public enum AIService {
         return attachmentAsk.contains { normalized.contains($0) }
     }
 
+    /// `context` carries what Clippy knows outside the transcript — durable
+    /// facts about the user and the ambient state of their desk (time, day,
+    /// which app is in front). It is appended to the system prompt rather
+    /// than injected as a fake user turn, so it never reads as something the
+    /// user just said and never gets echoed back at them.
     public static func reply(
         provider: AIProvider,
         messages: [ChatMessage],
         model: String,
         apiKey: String?,
         attachments: [URL] = [],
-        presentation: ResponsePresentation
+        presentation: ResponsePresentation,
+        context: String = ""
     ) async throws -> String {
+        let instructions = instructions(for: presentation, context: context)
         let prompt = transcript(
             messages,
             attachments: attachments,
-            presentation: presentation
+            presentation: presentation,
+            context: context
         )
         switch provider {
         case .claudeCLI:
@@ -427,7 +458,7 @@ public enum AIService {
                 model: model,
                 apiKey: apiKey,
                 attachments: attachments,
-                instructions: systemPrompt + "\n\n" + presentation.instructions
+                instructions: instructions
             )
         case .anthropic:
             guard let apiKey, !apiKey.isEmpty else { throw ClippyError.missingAPIKey("Anthropic") }
@@ -436,7 +467,7 @@ public enum AIService {
                 model: model,
                 apiKey: apiKey,
                 attachments: attachments,
-                instructions: systemPrompt + "\n\n" + presentation.instructions
+                instructions: instructions
             )
         }
     }
@@ -449,10 +480,24 @@ public enum AIService {
         }
     }
 
+    /// The full system side of a request: who Clippy is, how this particular
+    /// answer will be presented, and what it knows outside the transcript.
+    /// Shared by every provider — and by `ChatViewModel`'s streaming path —
+    /// so none of them can drift into a different prompt.
+    public static func instructions(
+        for presentation: ResponsePresentation,
+        context: String = ""
+    ) -> String {
+        let base = systemPrompt + "\n\n" + presentation.instructions
+        let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? base : base + "\n\n" + trimmed
+    }
+
     private static func transcript(
         _ messages: [ChatMessage],
         attachments: [URL],
-        presentation: ResponsePresentation
+        presentation: ResponsePresentation,
+        context: String = ""
     ) -> String {
         let recent = messages.suffix(16).map {
             "\($0.role == .user ? "User" : "Clippy"): \($0.content)"
@@ -460,9 +505,7 @@ public enum AIService {
         let files = attachmentPrompt(attachments)
 
         return """
-        \(systemPrompt)
-
-        \(presentation.instructions)
+        \(instructions(for: presentation, context: context))
 
         Continue this conversation. Answer only as Clippy, without a speaker label.
 

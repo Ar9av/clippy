@@ -17,6 +17,10 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var recentlyCompleted = false
     @Published private(set) var recentSessions: [CodingSession] = []
     @Published private(set) var chatHistory: [ArchivedChatSession] = []
+    /// Durable facts about the user, carried across chats and relaunches.
+    /// Published so Settings can show and delete them — memory the user
+    /// can't see is memory they can't correct.
+    @Published private(set) var memories: [MemoryFact] = MemoryStore.load()
     @Published var pendingScreenAction: PendingScreenAction?
     /// The most recently finished CLI session, waiting to be shown. Set by the
     /// inbox poll below; cleared when dismissed or resumed.
@@ -303,6 +307,7 @@ final class ChatViewModel: ObservableObject {
         startActivityClock(hasAttachments: !attachments.isEmpty)
 
         let history = messages
+        let conversationContext = Self.conversationContext(memories: memories)
         let selectedProvider = provider
         let selectedModel = model
         let key = KeychainStore.read(account: selectedProvider.rawValue)
@@ -312,14 +317,23 @@ final class ChatViewModel: ObservableObject {
         let shouldBuildScreenPlan = forceScreenPlan
             || Self.requestsScreenPlan(history.last?.content ?? "")
         let shouldDraftScreenReply = Self.requestsScreenReply(history.last?.content ?? "")
-        // Always capture the screen + running-app list rather than gating it
-        // behind a hand-written phrase list. The model decides from that
-        // context whether the request needs a click, a multi-app workflow,
-        // or no screen action at all — matching phrases like "open", "do it",
-        // or something we never thought to enumerate would otherwise leave
-        // it answering blind. The presentation-specific flags below still
-        // shape formatting strictness once we know context is available.
-        let shouldInspectScreen = ScreenAwarenessService.shared.canSeeScreen
+        // Screen capture used to be unconditional, on the reasoning that any
+        // phrase list gating it would eventually miss a request and leave
+        // Clippy answering blind. That reasoning is still right — but it cost
+        // a full multi-display screenshot plus an accessibility scan on
+        // "what's a good name for this function?", and because the screenshot
+        // becomes an attachment it also disqualified every such message from
+        // the streaming path below, so the cheapest questions were the ones
+        // that felt slowest.
+        //
+        // So: skip the capture only for messages that are *self-evidently*
+        // self-contained (`mightNeedScreen` errs hard towards capturing), and
+        // make the miss self-correcting rather than silent — if the model
+        // answers as though it needed to see something, the request is
+        // retried once with real screen context below.
+        let mightNeedScreen = shouldWriteToScreen || shouldBuildScreenPlan || shouldDraftScreenReply
+            || Self.mightNeedScreen(history.last?.content ?? "")
+        let shouldInspectScreen = ScreenAwarenessService.shared.canSeeScreen && mightNeedScreen
         // Without Screen Recording, every request previously still went out
         // with screen-action instructions in the prompt while no screenshot
         // was ever attached — the model had no way to know why, and the user
@@ -400,7 +414,8 @@ final class ChatViewModel: ObservableObject {
                         history: history,
                         model: selectedModel,
                         apiKey: key,
-                        presentation: presentation
+                        presentation: presentation,
+                        context: conversationContext
                     )
                     response = streamed.text
                     streamedMessageID = streamed.messageID
@@ -411,9 +426,52 @@ final class ChatViewModel: ObservableObject {
                         model: selectedModel,
                         apiKey: key,
                         attachments: effectiveAttachments,
-                        presentation: presentation
+                        presentation: presentation,
+                        context: conversationContext
                     )
                 }
+
+                // The self-correcting half of the capture gate above: the
+                // request looked self-contained, but the answer says
+                // otherwise ("I can't see your screen…"). Capture for real
+                // and ask once more, so a miss costs one extra round-trip
+                // instead of a wrong answer. Only ever runs when we skipped
+                // the capture, so it can't loop.
+                if !shouldInspectScreen,
+                   ScreenAwarenessService.shared.canSeeScreen,
+                   AIService.asksForScreenAttachment(response) {
+                    activityMessage = "Taking a look at your screen…"
+                    let context = try await ScreenAwarenessService.shared.captureContext()
+                    effectiveAttachments.append(contentsOf: context.screenshotURLs)
+                    effectiveAttachments.append(context.contextURL)
+                    capturedScreen = context
+                    screenStatus = "Looking at \(context.appName) · \(context.windowTitle)"
+                    // A streamed placeholder is now showing an answer we're
+                    // about to replace — drop it rather than leaving the
+                    // "I can't see your screen" text visible mid-retry.
+                    if let streamedMessageID, let index = messages.firstIndex(where: { $0.id == streamedMessageID }) {
+                        messages.remove(at: index)
+                    }
+                    streamedMessageID = nil
+                    response = try await AIService.reply(
+                        provider: selectedProvider,
+                        messages: history,
+                        model: selectedModel,
+                        apiKey: key,
+                        attachments: effectiveAttachments,
+                        presentation: presentation,
+                        context: conversationContext
+                    )
+                }
+                // Strip any [[CLIPPY_REMEMBER:…]] before anything else looks
+                // at the text: it must never reach the transcript, the
+                // balloon, speech, or a field Clippy types into.
+                let recalled = AIService.extractMemory(from: response)
+                response = recalled.response
+                if let fact = recalled.fact {
+                    memories = MemoryStore.remember(fact)
+                }
+
                 if shouldDraftScreenReply, AIService.asksForScreenAttachment(response) {
                     // Some CLI providers occasionally ignore image attachments on
                     // their first pass. Retry once with an unambiguous instruction
@@ -428,7 +486,8 @@ final class ChatViewModel: ObservableObject {
                         model: selectedModel,
                         apiKey: key,
                         attachments: effectiveAttachments,
-                        presentation: .screenReply
+                        presentation: .screenReply,
+                        context: conversationContext
                     )
                     if AIService.asksForScreenAttachment(response) {
                         response = "I can’t find an open conversation on screen."
@@ -601,7 +660,8 @@ final class ChatViewModel: ObservableObject {
         history: [ChatMessage],
         model: String,
         apiKey: String,
-        presentation: ResponsePresentation
+        presentation: ResponsePresentation,
+        context: String
     ) async throws -> (text: String, messageID: UUID) {
         let recent = Array(history.suffix(24))
         let trimmed = recent.firstIndex(where: { $0.role == .user }).map { Array(recent[$0...]) } ?? recent
@@ -609,7 +669,7 @@ final class ChatViewModel: ObservableObject {
             CompletionMessage(role: $0.role == .user ? .user : .assistant, content: [.text($0.content)])
         }
         let request = CompletionRequest(
-            system: AIService.systemPrompt + "\n\n" + presentation.instructions,
+            system: AIService.instructions(for: presentation, context: context),
             messages: completionMessages,
             model: model
         )
@@ -715,6 +775,68 @@ final class ChatViewModel: ObservableObject {
             "type it", "put it", "paste it", "enter it", "there"
         ].contains { normalized.contains($0) }
         return writingVerb && destinationHint
+    }
+
+    /// Everything Clippy knows that isn't in the transcript: durable facts
+    /// about the user, then the ambient state of their desk.
+    private static func conversationContext(memories: [MemoryFact]) -> String {
+        [MemoryStore.promptBlock(memories), AmbientContext.promptBlock()]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    func forget(_ fact: MemoryFact) {
+        memories = MemoryStore.forget(id: fact.id)
+    }
+
+    func forgetEverything() {
+        MemoryStore.forgetAll()
+        memories = []
+    }
+
+    /// Whether a message could plausibly be about what's on screen — the gate
+    /// on the (expensive) screen capture in `startRequest`.
+    ///
+    /// Deliberately over-inclusive: capturing when it wasn't needed costs a
+    /// second, while not capturing when it was needed costs a wrong answer.
+    /// So this returns true for anything containing a demonstrative ("this",
+    /// "that", "here", "it"), any reference to screen furniture, any
+    /// imperative verb that could act on an app, or any question that isn't
+    /// obviously self-contained. It's only false for messages that stand
+    /// entirely on their own — and the retry in `startRequest` catches the
+    /// cases where even that judgement was wrong.
+    nonisolated static func mightNeedScreen(_ request: String) -> Bool {
+        let normalized = request.lowercased()
+        let words = normalized.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard !words.isEmpty else { return false }
+
+        // A demonstrative with no antecedent in the message almost always
+        // points at something on screen ("what does this mean?", "fix it").
+        let deictic: Set<String> = [
+            "this", "that", "these", "those", "here", "there", "it", "its",
+            "mine", "my", "current", "currently", "now", "above", "below"
+        ]
+        if words.contains(where: deictic.contains) { return true }
+
+        // Screen furniture, named directly.
+        let surfaces = [
+            "screen", "window", "tab", "page", "app", "button", "menu", "dialog",
+            "field", "toolbar", "sidebar", "desktop", "display", "monitor",
+            "highlight", "click", "scroll", "select", "open", "close", "switch",
+            "type", "paste", "fill", "enter", "navigate", "settings", "preference"
+        ]
+        if surfaces.contains(where: { normalized.contains($0) }) { return true }
+
+        // A bare imperative ("do it", "go", "fix", "try again") is a request
+        // to act, and acting means looking.
+        let firstWord = words[0]
+        let imperatives: Set<String> = [
+            "do", "go", "fix", "try", "run", "make", "show", "find", "help",
+            "read", "check", "look", "continue", "retry", "again", "undo", "stop"
+        ]
+        if imperatives.contains(firstWord) { return true }
+
+        return false
     }
 
     private static func requestsScreenContext(_ request: String) -> Bool {
