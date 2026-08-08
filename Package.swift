@@ -19,7 +19,14 @@ let package = Package(
     targets: [
         .target(
             name: "ClippyCore",
-            path: "Sources/ClippyCore"
+            path: "Sources/ClippyCore",
+            // The compiled Prismor policy that defines every screen refusal.
+            // A resource rather than a string constant so it stays inspectable
+            // and diffable; `.copy` (not `.process`) keeps it byte-identical
+            // to what `scripts/compile-policy.sh` produced.
+            resources: [
+                .copy("Resources/prismor-policy.json")
+            ]
         ),
         .executableTarget(
             name: "ClippyMac",

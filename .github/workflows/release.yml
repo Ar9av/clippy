@@ -46,6 +46,16 @@ jobs:
           key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
           restore-keys: ${{ runner.os }}-spm-
 
+      # The app reads the compiled JSON, not the YAML, so a policy edit that
+      # skipped the compile step would ship a guardrail that silently doesn't
+      # match what the source of truth says. Recompile and fail on any diff.
+      - name: Check the Prismor policy is compiled
+        run: |
+          pip3 install --quiet pyyaml
+          ./scripts/compile-policy.sh
+          git diff --exit-code Sources/ClippyCore/Resources/prismor-policy.json \
+            || { echo "::error::prismor-policy.json is stale — run ./scripts/compile-policy.sh"; exit 1; }
+
       - name: Test
         run: swift test
 

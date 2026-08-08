@@ -1,0 +1,164 @@
+version: "1.0"
+
+# Clippy's automation guardrail, as a Prismor Warden policy.
+#
+# This file is the source of truth for every refusal Clippy makes on screen.
+# The Swift side (`PrismorPolicy.swift` / `AutomationSafety.swift`) holds no
+# rule text of its own any more: it loads the compiled form of this policy and
+# evaluates it. Editing this file changes what Clippy will and won't do.
+#
+# Compile after editing (the app reads the JSON, not this file):
+#     ./scripts/compile-policy.sh
+#
+# Validate against Prismor's own schema:
+#     prismor policy validate Resources/prismor-policy.yaml
+#
+# ── One deviation from stock Warden, on purpose ────────────────────────────
+# Warden's `event_types` enum covers an agent that runs commands and touches
+# files: shell, file_read, file_write, network, prompt, tool_result. Clippy is
+# an agent that clicks buttons, so none of them fit — its dangerous act is
+# "operate the control labelled Send", not "run a command". These rules use
+# `ui_action`, with fields `control_label`, `ax_role`, `app_name`, and
+# `typed_text`. Until Warden's schema learns that event type upstream,
+# `prismor policy validate` will reject the enum; every other part of the file
+# is stock and the evaluator implements Warden's documented semantics
+# (severity, action, mode, allowlists, add_patterns/disable_patterns).
+
+settings:
+  # Clippy's guardrail is not advisory. Anything that matches, blocks.
+  default_mode: enforce
+
+  block_categories:
+    - final_action
+    - credential_entry
+    - restricted_app
+
+rules:
+  # ── The core refusal ──────────────────────────────────────────────────
+  # A real-world consequential act: messaging someone, spending money,
+  # destroying data, agreeing to something. Clippy gets you to this button
+  # and stops; you press it.
+  #
+  # Patterns are word-anchored (\b) rather than substring, and that matters:
+  # "sender name" and "repost" must not match send/post, while "Send message"
+  # and "Buy now" must.
+  - id: gui-final-action
+    severity: CRITICAL
+    category: final_action
+    title: Control performs a consequential, non-reversible action
+    event_types: [ui_action]
+    fields: [control_label]
+    action: block
+    mode: enforce
+    patterns:
+      - '\bsend\b'
+      - '\bsubmit\b'
+      - '\bpublish\b'
+      - '\bpost\b'
+      - '\bbuy\b'
+      - '\bpurchase\b'
+      - '\bpay\b'
+      - '\bdelete\b'
+      - '\bremove\b'
+      - '\baccept\b'
+      - '\bagree\b'
+      - '\btransfer\b'
+      - '\bpassword\b'
+      - '\bpasscode\b'
+      - '\bconfirm\b'
+      - '\bcheckout\b'
+      - 'place order'
+      - 'sign out'
+      - 'log out'
+
+  # ── Credentials ───────────────────────────────────────────────────────
+  # Matched on the accessibility role, not the label, so it holds even when a
+  # password field is labelled something harmless. Clippy never reads one back
+  # and never types into one.
+  - id: gui-secure-field
+    severity: CRITICAL
+    category: credential_entry
+    title: Target is a secure text field
+    event_types: [ui_action]
+    fields: [ax_role]
+    action: block
+    mode: enforce
+    patterns:
+      - '^AXSecureTextField$'
+
+  # ── Return ────────────────────────────────────────────────────────────
+  # Clippy does not press Return. Typing into a field is reversible; pressing
+  # Return is what turns text into an act. The single exception below is
+  # scoped by allowlist rather than by an `if` in Swift, so it's auditable.
+  - id: gui-return-key
+    severity: HIGH
+    category: final_action
+    title: Return key submits a field
+    event_types: [ui_action]
+    fields: [control_label]
+    action: block
+    mode: enforce
+    patterns:
+      - '^.*$'
+
+  # ── Restricted apps ───────────────────────────────────────────────────
+  # Disabled, matching this build's deliberate choice: everything runs on the
+  # user's own machine, and `gui-return-key` already means Clippy can type
+  # into a terminal but can't submit. Flip `enabled: true` to restore the
+  # restriction — which is the point of it being a rule rather than the empty
+  # Swift arrays this replaced, where the intent was invisible.
+  - id: gui-restricted-app
+    severity: HIGH
+    category: restricted_app
+    title: App runs commands and must not be driven
+    enabled: false
+    event_types: [ui_action]
+    fields: [app_name]
+    action: block
+    mode: enforce
+    patterns:
+      - '\bterminal\b'
+      - '\biterm\b'
+      - '\bwarp\b'
+      - '\bghostty\b'
+      - '\bkitty\b'
+      - '\balacritty\b'
+
+allowlists:
+  # The one narrow place Clippy may press Return: a browser's own address or
+  # search bar, whether that's a URL to navigate to or a phrase to search for.
+  # Either way it's the browser's own "go", never a form submission.
+  #
+  # Deliberately not a bare 'address': "Email address" and "Billing address"
+  # are form fields that would otherwise inherit the exception. Those are
+  # excluded by `gui-form-field-guard` below, which is checked first.
+  - id: browser-address-bar-submit
+    rule_ids: [gui-return-key]
+    reason: A browser's own address/search bar; submitting it navigates or searches, and commits nothing.
+    patterns:
+      - 'address and search'
+      - 'address or search'
+      - 'location bar'
+      - 'omnibox'
+      - 'search or type'
+      - 'search bar'
+      - '^\s*url\s*$'
+      - '^\s*address bar\s*$'
+
+  # Not an allowlist in spirit — a veto on the one above. Any label carrying
+  # these words is a form field and never browser chrome, so the address-bar
+  # exception must not reach it. The evaluator checks this first and, on a
+  # match, refuses to apply any allowlist at all.
+  - id: gui-form-field-guard
+    rule_ids: [__veto__]
+    reason: Form fields (email, billing, shipping, contact) can contain the word "address" but are never browser chrome.
+    patterns:
+      - '\bemail\b'
+      - '\bbilling\b'
+      - '\bshipping\b'
+      - '\bstreet\b'
+      - '\bmailing\b'
+      - 'home address'
+      - '\bform\b'
+      - '\bcontact\b'
+      - '\brecipient\b'

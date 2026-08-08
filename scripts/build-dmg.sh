@@ -36,6 +36,19 @@ cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippySprites.png" "$CONTENTS_DIR/Resources/ClippySprites.png"
 cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippyAnimations.json" "$CONTENTS_DIR/Resources/ClippyAnimations.json"
 
+# The Prismor policy that defines every on-screen refusal. Clippy fails closed
+# without it — a shipped app missing this file would refuse every screen
+# action rather than run unguarded — so a build that somehow lost it is a
+# broken build, not a degraded one. Recompile from the YAML first so the
+# shipped policy can never lag the source of truth.
+"$SCRIPT_DIR/compile-policy.sh"
+POLICY_SOURCE="$PROJECT_DIR/Sources/ClippyCore/Resources/prismor-policy.json"
+cp "$POLICY_SOURCE" "$CONTENTS_DIR/Resources/prismor-policy.json"
+if [[ ! -s "$CONTENTS_DIR/Resources/prismor-policy.json" ]]; then
+    echo "error: the Prismor policy is missing from the app bundle" >&2
+    exit 1
+fi
+
 PADDED_ICON="$BUILD_DIR/clippy-square.png"
 cp "$SOURCE_ICON" "$PADDED_ICON"
 sips -p 512 512 --padColor FFFFFF "$PADDED_ICON" >/dev/null

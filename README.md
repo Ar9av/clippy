@@ -199,15 +199,56 @@ scripts/build-dmg.sh             Universal-binary build, code signing, and DMG p
   changes what's visible, commits nothing, and destroys nothing. It still
   refuses to scroll a restricted app, since that's still synthetic input
   aimed at one.
-- By default, this build's terminal and agent-CLI blocklist
-  (`AutomationSafety.swift`) is **empty**: Clippy can click and type into
+- By default, this build's terminal and agent-CLI restriction is **off**
+  (`gui-restricted-app`, `enabled: false`): Clippy can click and type into
   Terminal, Warp, iTerm, and similar apps, on the reasoning that everything
-  runs on your own machine and Return still can't be sent there. If you want
-  that restricted again, add bundle identifiers or name fragments back to
-  `blockedBundleIdentifiers` and `blockedNameFragments`.
+  runs on your own machine and Return still can't be sent there. Flip that
+  one flag to restore it.
 - Nothing runs without both **Accessibility** and **Screen & System Audio
   Recording** permission granted in System Settings. Clippy prompts for both
   the first time it needs them.
+
+### The rules are a Prismor policy, not Swift
+
+Every refusal above comes from
+[`Resources/prismor-policy.yaml`](Resources/prismor-policy.yaml) — a
+[Prismor Warden](https://prismor.dev) policy file. `AutomationSafety.swift`
+holds no rule text any more; it asks the policy and reports the answer. So
+changing what Clippy will and won't touch is a diff to a YAML file, reviewable
+on its own, with no rebuild of anyone's mental model of the Swift.
+
+```yaml
+- id: gui-final-action
+  severity: CRITICAL
+  category: final_action
+  title: Control performs a consequential, non-reversible action
+  event_types: [ui_action]
+  fields: [control_label]
+  mode: enforce
+  patterns: ['\bsend\b', '\bsubmit\b', '\bbuy\b', '\bdelete\b', ...]
+```
+
+After editing, recompile the form the app loads (CI fails the build if you
+forget):
+
+```bash
+./scripts/compile-policy.sh
+```
+
+**It fails closed.** A policy that's missing, corrupt, or contains a regex
+that won't compile does not degrade into "allow" — Clippy treats every
+control as a final action and stops touching the screen entirely. A guardrail
+that quietly stops guarding is worse than one that visibly stops working.
+
+> [!NOTE]
+> One deviation from stock Warden: its `event_types` enum describes an agent
+> that runs commands and edits files (`shell`, `file_read`, `network`, …).
+> Clippy's dangerous act is *"operate the control labelled Send"*, so these
+> rules use a `ui_action` event type with `control_label` / `ax_role` /
+> `app_name` fields. Everything else — severity, `mode`, allowlists,
+> `add_patterns` / `disable_patterns` and their strengthen-only semantics — is
+> stock and implemented to match. Until `ui_action` lands upstream,
+> `prismor policy validate` will reject the enum.
 
 ## Build it yourself
 

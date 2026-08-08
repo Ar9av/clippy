@@ -1,0 +1,142 @@
+{
+  "allowlists": [
+    {
+      "id": "browser-address-bar-submit",
+      "patterns": [
+        "address and search",
+        "address or search",
+        "location bar",
+        "omnibox",
+        "search or type",
+        "search bar",
+        "^\\s*url\\s*$",
+        "^\\s*address bar\\s*$"
+      ],
+      "reason": "A browser's own address/search bar; submitting it navigates or searches, and commits nothing.",
+      "rule_ids": [
+        "gui-return-key"
+      ]
+    },
+    {
+      "id": "gui-form-field-guard",
+      "patterns": [
+        "\\bemail\\b",
+        "\\bbilling\\b",
+        "\\bshipping\\b",
+        "\\bstreet\\b",
+        "\\bmailing\\b",
+        "home address",
+        "\\bform\\b",
+        "\\bcontact\\b",
+        "\\brecipient\\b"
+      ],
+      "reason": "Form fields (email, billing, shipping, contact) can contain the word \"address\" but are never browser chrome.",
+      "rule_ids": [
+        "__veto__"
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "action": "block",
+      "category": "final_action",
+      "event_types": [
+        "ui_action"
+      ],
+      "fields": [
+        "control_label"
+      ],
+      "id": "gui-final-action",
+      "mode": "enforce",
+      "patterns": [
+        "\\bsend\\b",
+        "\\bsubmit\\b",
+        "\\bpublish\\b",
+        "\\bpost\\b",
+        "\\bbuy\\b",
+        "\\bpurchase\\b",
+        "\\bpay\\b",
+        "\\bdelete\\b",
+        "\\bremove\\b",
+        "\\baccept\\b",
+        "\\bagree\\b",
+        "\\btransfer\\b",
+        "\\bpassword\\b",
+        "\\bpasscode\\b",
+        "\\bconfirm\\b",
+        "\\bcheckout\\b",
+        "place order",
+        "sign out",
+        "log out"
+      ],
+      "severity": "CRITICAL",
+      "title": "Control performs a consequential, non-reversible action"
+    },
+    {
+      "action": "block",
+      "category": "credential_entry",
+      "event_types": [
+        "ui_action"
+      ],
+      "fields": [
+        "ax_role"
+      ],
+      "id": "gui-secure-field",
+      "mode": "enforce",
+      "patterns": [
+        "^AXSecureTextField$"
+      ],
+      "severity": "CRITICAL",
+      "title": "Target is a secure text field"
+    },
+    {
+      "action": "block",
+      "category": "final_action",
+      "event_types": [
+        "ui_action"
+      ],
+      "fields": [
+        "control_label"
+      ],
+      "id": "gui-return-key",
+      "mode": "enforce",
+      "patterns": [
+        "^.*$"
+      ],
+      "severity": "HIGH",
+      "title": "Return key submits a field"
+    },
+    {
+      "action": "block",
+      "category": "restricted_app",
+      "enabled": false,
+      "event_types": [
+        "ui_action"
+      ],
+      "fields": [
+        "app_name"
+      ],
+      "id": "gui-restricted-app",
+      "mode": "enforce",
+      "patterns": [
+        "\\bterminal\\b",
+        "\\biterm\\b",
+        "\\bwarp\\b",
+        "\\bghostty\\b",
+        "\\bkitty\\b",
+        "\\balacritty\\b"
+      ],
+      "severity": "HIGH",
+      "title": "App runs commands and must not be driven"
+    }
+  ],
+  "settings": {
+    "block_categories": [
+      "final_action",
+      "credential_entry",
+      "restricted_app"
+    ],
+    "default_mode": "enforce"
+  },
+  "version": "1.0"
+}

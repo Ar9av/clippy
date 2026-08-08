@@ -1,113 +1,85 @@
 import AppKit
 
-/// Terminals and agent CLIs run real commands, so a drafted reply or
-/// auto-typed confirmation landing in one could in principle trigger a real
-/// command. Left empty at the user's explicit request (everything runs on
-/// their own machine) — the residual guard against that is that
-/// `ScreenPlanKey` still excludes Return everywhere except a browser
-/// address/search bar (see `isSafeAddressBarSubmit`), so Clippy can still type
-/// into a terminal but can't press Enter to submit it. Re-add bundle
-/// identifiers/name fragments here to restore the restriction.
+/// The call sites' view of the guardrail. Every question here is answered by
+/// the Prismor Warden policy in `Resources/prismor-policy.yaml` — this type
+/// holds no rule text of its own, only the knowledge of which direction
+/// "refuse" points for each question when the policy can't be loaded.
+///
+/// The API is unchanged from the hand-written version it replaced, so the plan
+/// validator, the runner, the single-click path, and the offline safety eval
+/// all keep working against the same three questions.
 public enum AutomationSafety {
-    private static let blockedBundleIdentifiers: Set<String> = []
+    /// Rule and allowlist identifiers, matching the policy file. Typos here
+    /// would silently disable a guardrail (an unknown rule id matches
+    /// nothing), so they're named once and asserted by
+    /// `PrismorPolicyTests.testEveryIdentifierThisCodeAsksForExists`.
+    enum PolicyID {
+        static let finalAction = "gui-final-action"
+        static let secureField = "gui-secure-field"
+        static let returnKey = "gui-return-key"
+        static let restrictedApp = "gui-restricted-app"
+        static let addressBarSubmit = "browser-address-bar-submit"
+    }
 
-    private static let blockedNameFragments: [String] = []
+    static var policy: PrismorPolicy { .active }
 
+    /// Apps that run real commands, which Clippy must not drive. Disabled in
+    /// the shipped policy at the user's explicit request — see the
+    /// `gui-restricted-app` rule, which documents the reasoning and can be
+    /// flipped back on without touching Swift.
     public static func isRestricted(_ application: NSRunningApplication) -> Bool {
-        if let bundleIdentifier = application.bundleIdentifier,
-           blockedBundleIdentifiers.contains(bundleIdentifier) {
-            return true
-        }
-        return isRestrictedName(application.localizedName ?? "")
+        isRestrictedName(application.localizedName ?? "")
     }
 
     /// Used when a plan names an app that isn't running yet, so a restricted
     /// target is refused before it is ever launched.
     public static func isRestrictedName(_ name: String) -> Bool {
-        let normalized = name.lowercased()
-        return blockedNameFragments.contains { normalized.contains($0) }
+        policy.matches(ruleID: PolicyID.restrictedApp, value: name)
     }
 
     /// Controls Clippy must never operate: the last click of a form, a
-    /// purchase, a deletion, or anything that hands over credentials. One list
-    /// shared by the plan validator, the runner, and the single-click path so
-    /// they can't drift apart.
-    private static let finalActionFragments = [
-        "send", "submit", "publish", "post", "buy", "purchase", "pay",
-        "delete", "remove", "accept", "agree", "place order", "transfer",
-        "password", "passcode", "confirm", "checkout", "sign out", "log out"
-    ]
-
+    /// purchase, a deletion, or anything that hands over credentials.
+    ///
+    /// Fails closed. With no usable policy there is no way to tell a harmless
+    /// button from "Confirm payment", so every control is treated as final and
+    /// Clippy stops asking to click things.
     public static func isFinalAction(_ label: String) -> Bool {
-        containsWord(label, in: finalActionFragments)
-    }
-
-    /// Splits `text` on anything that isn't a letter/digit and checks whether
-    /// any resulting word (or, for multi-word fragments like "place order",
-    /// the raw substring) matches a fragment. This is deliberately stricter
-    /// than a bare `contains`: "sender name" and "repost" must not match
-    /// "send"/"post", while "Send message" and "Buy now" still must.
-    private static func containsWord(_ text: String, in fragments: [String]) -> Bool {
-        let normalized = text.lowercased()
-        let words = Set(normalized.split { !$0.isLetter && !$0.isNumber }.map(String.init))
-        for fragment in fragments {
-            if fragment.contains(" ") {
-                if normalized.contains(fragment) { return true }
-            } else if words.contains(fragment) {
-                return true
-            }
-        }
-        return false
+        if policy.isFailClosed { return true }
+        return policy.matches(ruleID: PolicyID.finalAction, value: label)
     }
 
     /// Fields whose contents must never be read back, retyped, or auto-typed
-    /// into: passwords, passcodes, and anything the OS itself marks as a
-    /// secure text field. Kept alongside the label-based checks so the
-    /// AX-role-based check (`ScreenAwarenessService.put`) and any future
-    /// label-only callers share the same judgment about what counts as secure.
+    /// into. Matched on the accessibility role rather than the label, so it
+    /// holds even when a password field is labelled something harmless.
     public static func isSecureField(role: String, subrole: String) -> Bool {
-        role == "AXSecureTextField" || subrole == "AXSecureTextField"
+        if policy.isFailClosed { return true }
+        return policy.matches(ruleID: PolicyID.secureField, value: role)
+            || policy.matches(ruleID: PolicyID.secureField, value: subrole)
     }
-
-    /// Fragments that indicate a field belongs to a real browser location/search
-    /// bar, never a form field that merely happens to be labelled "address".
-    private static let addressFieldFragments = [
-        "address and search", "address or search", "location bar", "omnibox",
-        "search or type", "search bar"
-    ]
-
-    private static let addressFieldExactFragments: Set<String> = ["url", "address bar"]
-
-    /// Labels that mean a field belongs to a form (shipping, billing, contact,
-    /// account) rather than a browser chrome control, even though the word
-    /// "address" appears in both. Checked first and unconditionally disqualifies
-    /// a target, so a browser-chrome match can never be masked by these.
-    private static let formFieldFragments = [
-        "email", "billing", "shipping", "street", "mailing", "home address",
-        "form", "contact", "recipient"
-    ]
 
     /// The one narrow exception to "Clippy never sends the Return key":
     /// submitting a browser's own address/search field, whether that's a URL
     /// (navigate) or plain text (search with the default engine). Either way
-    /// it's the browser's own "go" action — never a form submission, a
-    /// purchase, or anything else `isFinalAction` guards against. The
-    /// destination field must specifically look like browser chrome — bare
-    /// "address" is not enough, since "Email address"/"Billing address" form
-    /// fields also contain that word. A step that doesn't satisfy this must
-    /// fall back to leaving the text typed and letting the user press Return
-    /// themselves.
+    /// it's the browser's own "go" — never a form submission or a purchase.
+    ///
+    /// Fails closed in the other direction: an exception that can't be
+    /// verified isn't granted, so Clippy types the text and leaves Return to
+    /// the user.
     public static func isSafeAddressBarSubmit(target: String, text: String) -> Bool {
-        let normalizedTarget = target.lowercased()
-        guard !formFieldFragments.contains(where: normalizedTarget.contains) else {
-            return false
-        }
-        let matchesChrome = addressFieldFragments.contains(where: normalizedTarget.contains)
-            || containsWord(normalizedTarget, in: Array(addressFieldExactFragments))
-        guard matchesChrome else {
+        guard !policy.isFailClosed else { return false }
+        guard policy.isAllowed(entryID: PolicyID.addressBarSubmit, value: target) else {
             return false
         }
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmedText.isEmpty && !trimmedText.contains("\n")
+    }
+
+    /// What this build will refuse, in the user's words rather than the
+    /// policy's. Surfaced in Settings so the guardrail is inspectable without
+    /// reading YAML.
+    public static var activeRuleSummaries: [String] {
+        policy.isFailClosed
+            ? ["Policy unavailable — every screen action is being refused."]
+            : policy.activeRuleSummaries
     }
 }
