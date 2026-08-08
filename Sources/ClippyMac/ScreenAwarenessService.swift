@@ -760,6 +760,49 @@ final class ScreenAwarenessService {
             self.boolAttribute(kAXFocusedAttribute, from: resolved.element) ?? true
         }
 
+        // Writing kAXValue replaces the field's entire contents. For a search
+        // box or an address bar that is exactly right — the user means "search
+        // for this", not "append to whatever is in there". For a document or a
+        // half-written message it silently destroys their work, and the
+        // highlight then told them "Text added", which was not true.
+        //
+        // So: replace single-line fields, and insert into a text area that
+        // already has something in it. `kAXSelectedText` is the accessibility
+        // equivalent of typing at the caret, which is what "type this into my
+        // document" means; appending is the fallback when a field won't take a
+        // selection write.
+        let existing = stringAttribute(kAXValueAttribute, from: resolved.element) ?? ""
+        let isDocument = role == kAXTextAreaRole as String
+        let preservesExisting = isDocument && !existing.isEmpty && existing != text
+
+        if preservesExisting {
+            if AXUIElementSetAttributeValue(
+                resolved.element,
+                kAXSelectedTextAttribute as CFString,
+                text as CFString
+            ) == .success,
+               stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) == true {
+                highlightController.show(
+                    around: resolved.summary.frame,
+                    label: "Text inserted — Clippy did not submit it"
+                )
+                return
+            }
+            let appended = existing.hasSuffix("\n") ? existing + text : existing + "\n" + text
+            if AXUIElementSetAttributeValue(
+                resolved.element,
+                kAXValueAttribute as CFString,
+                appended as CFString
+            ) == .success,
+               stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) == true {
+                highlightController.show(
+                    around: resolved.summary.frame,
+                    label: "Text added at the end — Clippy did not submit it"
+                )
+                return
+            }
+        }
+
         let result = AXUIElementSetAttributeValue(
             resolved.element,
             kAXValueAttribute as CFString,
@@ -776,7 +819,11 @@ final class ScreenAwarenessService {
                 } else {
                     highlightController.show(
                         around: resolved.summary.frame,
-                        label: "Text added — Clippy did not submit it"
+                        // Say which of the two actually happened. A field that
+                        // had content and now doesn't was not "added" to.
+                        label: existing.isEmpty || existing == text
+                            ? "Text added — Clippy did not submit it"
+                            : "Text replaced — Clippy did not submit it"
                     )
                 }
                 return
