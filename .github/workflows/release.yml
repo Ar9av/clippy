@@ -51,8 +51,12 @@ jobs:
       # match what the source of truth says. Recompile and fail on any diff.
       - name: Check the Prismor policy is compiled
         run: |
-          pip3 install --quiet pyyaml
-          ./scripts/compile-policy.sh
+          # The runner's python3 is Homebrew-managed, so PEP 668 refuses a
+          # plain `pip3 install`. A throwaway venv on PATH gives the script the
+          # `python3` it asks for, with PyYAML in it.
+          python3 -m venv "$RUNNER_TEMP/policy-venv"
+          "$RUNNER_TEMP/policy-venv/bin/pip" install --quiet pyyaml
+          PATH="$RUNNER_TEMP/policy-venv/bin:$PATH" ./scripts/compile-policy.sh
           git diff --exit-code Sources/ClippyCore/Resources/prismor-policy.json \
             || { echo "::error::prismor-policy.json is stale — run ./scripts/compile-policy.sh"; exit 1; }
 
