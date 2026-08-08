@@ -7,16 +7,9 @@ import Foundation
 /// pre-existing UserDefaults value exactly once, then remove the key so the
 /// migration only ever runs a single time.
 enum ChatStore {
-    private static let directory: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Clippy", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base
-    }()
-
-    private static let messagesURL = directory.appendingPathComponent("messages.json")
-    private static let historyURL = directory.appendingPathComponent("history.json")
-    private static let pendingPlanURL = directory.appendingPathComponent("pendingPlan.json")
+    private static let messagesURL = SupportDirectory.url(for: "messages.json")
+    private static let historyURL = SupportDirectory.url(for: "history.json")
+    private static let pendingPlanURL = SupportDirectory.url(for: "pendingPlan.json")
 
     /// Deletes both store files outright, as opposed to saving an empty
     /// array to them — an empty-but-present file still decodes successfully

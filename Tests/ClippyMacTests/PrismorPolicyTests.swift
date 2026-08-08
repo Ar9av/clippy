@@ -124,3 +124,15 @@ final class PrismorPolicyTests: XCTestCase {
         """
     }
 }
+
+/// Regression from an exploratory sweep of the guardrail.
+extension PrismorPolicyTests {
+    /// `\bsend\b` correctly spares "Sender name", and equally correctly
+    /// spared "Resend" — which sends the message again.
+    func testResendIsRefusedButUnsendAndSenderAreNot() {
+        XCTAssertTrue(AutomationSafety.isFinalAction("Resend"))
+        XCTAssertTrue(AutomationSafety.isFinalAction("Resend invitation"))
+        XCTAssertFalse(AutomationSafety.isFinalAction("Unsend"))
+        XCTAssertFalse(AutomationSafety.isFinalAction("Sender name"))
+    }
+}

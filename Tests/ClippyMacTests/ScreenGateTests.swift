@@ -51,3 +51,37 @@ final class ScreenGateTests: XCTestCase {
         XCTAssertFalse(ChatViewModel.mightNeedScreen("   "))
     }
 }
+
+/// Regressions from an exploratory sweep of the gate: both directions were
+/// wrong for the same reason — surface terms were matched as substrings.
+extension ScreenGateTests {
+    /// "how do I center a div" took a screenshot because "center" contains
+    /// "enter"; "a good approach" because it contains "app". Pure knowledge
+    /// questions are exactly what the gate exists to make fast.
+    func testSurfaceTermsMatchWholeWordsNotSubstrings() {
+        for request in [
+            "how do I center a div",
+            "a good approach to caching",
+            "what is the diameter of Jupiter",
+            "explain the concept of entropy"
+        ] {
+            XCTAssertFalse(ChatViewModel.mightNeedScreen(request), request)
+        }
+    }
+
+    /// The README's flagship example. It reached the model with no screenshot
+    /// on this path, and was only rescued by `requestsScreenPlan` matching it
+    /// separately — not a guarantee worth resting on.
+    func testSettingsChangesAlwaysLook() {
+        for request in [
+            "turn on dark mode",
+            "enable reduce motion",
+            "disable notifications",
+            "set the volume to 50%",
+            "change my wallpaper",
+            "toggle bluetooth"
+        ] {
+            XCTAssertTrue(ChatViewModel.mightNeedScreen(request), request)
+        }
+    }
+}

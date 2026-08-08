@@ -818,21 +818,29 @@ final class ChatViewModel: ObservableObject {
         ]
         if words.contains(where: deictic.contains) { return true }
 
-        // Screen furniture, named directly.
-        let surfaces = [
+        // Screen furniture, named directly. Matched as whole words: as a
+        // substring, "enter" fires on "how do I center a div" and "app" on
+        // "a good approach", so the questions that most deserve to skip the
+        // screenshot were the ones taking it.
+        let surfaces: Set<String> = [
             "screen", "window", "tab", "page", "app", "button", "menu", "dialog",
             "field", "toolbar", "sidebar", "desktop", "display", "monitor",
             "highlight", "click", "scroll", "select", "open", "close", "switch",
-            "type", "paste", "fill", "enter", "navigate", "settings", "preference"
+            "type", "paste", "fill", "enter", "navigate", "settings", "setting",
+            "preference", "preferences"
         ]
-        if surfaces.contains(where: { normalized.contains($0) }) { return true }
+        if words.contains(where: surfaces.contains) { return true }
 
         // A bare imperative ("do it", "go", "fix", "try again") is a request
         // to act, and acting means looking.
         let firstWord = words[0]
         let imperatives: Set<String> = [
             "do", "go", "fix", "try", "run", "make", "show", "find", "help",
-            "read", "check", "look", "continue", "retry", "again", "undo", "stop"
+            "read", "check", "look", "continue", "retry", "again", "undo", "stop",
+            // "turn on dark mode" reached the model with no screenshot on this
+            // path alone. It happened to be rescued by `requestsScreenPlan`,
+            // which is not a guarantee worth resting on.
+            "turn", "enable", "disable", "set", "change", "update", "toggle"
         ]
         if imperatives.contains(firstWord) { return true }
 

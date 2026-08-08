@@ -52,6 +52,10 @@ rules:
     mode: enforce
     patterns:
       - '\bsend\b'
+      # "Resend" survived \bsend\b — the word boundary is doing its job, and
+      # re-sending a message is every bit as consequential as sending it.
+      # "Unsend" is deliberately absent: that one undoes a send.
+      - '\bresend\b'
       - '\bsubmit\b'
       - '\bpublish\b'
       - '\bpost\b'

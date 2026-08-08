@@ -23,12 +23,7 @@ enum MemoryStore {
     /// this, the oldest fact is dropped.
     private static let limit = 40
 
-    private static let url: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Clippy", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("memory.json")
-    }()
+    private static let url: URL = SupportDirectory.url(for: "memory.json")
 
     static func load() -> [MemoryFact] {
         guard let data = try? Data(contentsOf: url),

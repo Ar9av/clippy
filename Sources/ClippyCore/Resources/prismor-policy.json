@@ -51,6 +51,7 @@
       "mode": "enforce",
       "patterns": [
         "\\bsend\\b",
+        "\\bresend\\b",
         "\\bsubmit\\b",
         "\\bpublish\\b",
         "\\bpost\\b",
