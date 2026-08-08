@@ -241,14 +241,16 @@ control as a final action and stops touching the screen entirely. A guardrail
 that quietly stops guarding is worse than one that visibly stops working.
 
 > [!NOTE]
-> One deviation from stock Warden: its `event_types` enum describes an agent
-> that runs commands and edits files (`shell`, `file_read`, `network`, …).
-> Clippy's dangerous act is *"operate the control labelled Send"*, so these
+> Clippy's dangerous act is *"operate the control labelled Send"*, which
+> Warden's original `event_types` enum couldn't express — it described agents
+> that run commands and edit files (`shell`, `file_read`, `network`, …). These
 > rules use a `ui_action` event type with `control_label` / `ax_role` /
-> `app_name` fields. Everything else — severity, `mode`, allowlists,
-> `add_patterns` / `disable_patterns` and their strengthen-only semantics — is
-> stock and implemented to match. Until `ui_action` lands upstream,
-> `prismor policy validate` will reject the enum.
+> `app_name` / `typed_text` fields, [contributed
+> upstream](https://prismor.dev) along with the `type: veto` allowlist
+> precedence the address-bar exception depends on. Everything else — severity,
+> `mode`, `add_patterns` / `disable_patterns` and their strengthen-only
+> semantics — is stock and implemented to match, and the same file loads
+> identically in Warden and in Clippy.
 
 ## Build it yourself
 

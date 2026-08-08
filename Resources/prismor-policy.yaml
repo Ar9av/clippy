@@ -147,10 +147,17 @@ allowlists:
 
   # Not an allowlist in spirit — a veto on the one above. Any label carrying
   # these words is a form field and never browser chrome, so the address-bar
-  # exception must not reach it. The evaluator checks this first and, on a
-  # match, refuses to apply any allowlist at all.
+  # exception must not reach it. Vetoes are resolved before any allowlist can
+  # suppress, so this cannot be defeated by ordering.
+  #
+  # This was `rule_ids: [__veto__]`, a sentinel that only Clippy's own
+  # evaluator understood. Under stock Warden that entry applied to no rule at
+  # all, so "Email address and search" inherited the address-bar exception —
+  # the exact over-grant this guard exists to stop. `type: veto` is now a
+  # first-class Warden concept; this is the real thing.
   - id: gui-form-field-guard
-    rule_ids: [__veto__]
+    type: veto
+    rule_ids: ["*"]
     reason: Form fields (email, billing, shipping, contact) can contain the word "address" but are never browser chrome.
     patterns:
       - '\bemail\b'

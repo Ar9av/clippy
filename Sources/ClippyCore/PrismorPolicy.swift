@@ -54,11 +54,16 @@ public struct PrismorPolicy: Sendable {
         public let ruleIDs: [String]
         public let patterns: [String]
         public let reason: String?
+        /// `allow` (the default, and what an entry without the key means) or
+        /// `veto`: a pattern that disqualifies every allowlist for a value.
+        public let type: String?
 
         enum CodingKeys: String, CodingKey {
-            case id, patterns, reason
+            case id, patterns, reason, type
             case ruleIDs = "rule_ids"
         }
+
+        var isVeto: Bool { type == "veto" }
     }
 
     struct Settings: Decodable, Sendable {
@@ -75,11 +80,6 @@ public struct PrismorPolicy: Sendable {
         let allowlists: [Allowlist]?
         let settings: Settings?
     }
-
-    /// The pseudo rule id an allowlist entry targets when it is a veto rather
-    /// than a permission — matching it disqualifies every other allowlist for
-    /// that value. See `gui-form-field-guard` in the policy.
-    private static let vetoRuleID = "__veto__"
 
     private let rules: [Rule]
     private let allowlists: [Allowlist]
@@ -166,11 +166,7 @@ public struct PrismorPolicy: Sendable {
     /// Allowlist suppression, with the veto entries checked first so a
     /// permission can never be granted to something a veto claims.
     private func isSuppressed(ruleID: String, value: String) -> Bool {
-        for entry in allowlists where entry.ruleIDs.contains(Self.vetoRuleID) {
-            if compiledAllowlists[entry.id]?.contains(where: { $0.matches(value) }) == true {
-                return false
-            }
-        }
+        guard !isVetoed(value) else { return false }
         for entry in allowlists where entry.ruleIDs.contains(ruleID) || entry.ruleIDs.contains("*") {
             if compiledAllowlists[entry.id]?.contains(where: { $0.matches(value) }) == true {
                 return true
@@ -183,17 +179,24 @@ public struct PrismorPolicy: Sendable {
     /// "may Clippy press Return here?", which is an exception being claimed
     /// rather than a rule being tripped. Vetoes win.
     public func isAllowed(entryID: String, value: String) -> Bool {
-        guard let entry = allowlists.first(where: { $0.id == entryID }),
-              let expressions = compiledAllowlists[entryID] else {
+        guard let expressions = compiledAllowlists[entryID],
+              allowlists.contains(where: { $0.id == entryID && !$0.isVeto }) else {
             return false
         }
-        for veto in allowlists where veto.ruleIDs.contains(Self.vetoRuleID) {
-            if compiledAllowlists[veto.id]?.contains(where: { $0.matches(value) }) == true {
-                return false
+        guard !isVetoed(value) else { return false }
+        return expressions.contains(where: { $0.matches(value) })
+    }
+
+    /// Whether any veto entry claims this value. Resolved before any allowlist
+    /// can suppress or grant, so a carve-out never depends on the order
+    /// entries happen to be declared in.
+    private func isVetoed(_ value: String) -> Bool {
+        for entry in allowlists where entry.isVeto {
+            if compiledAllowlists[entry.id]?.contains(where: { $0.matches(value) }) == true {
+                return true
             }
         }
-        _ = entry
-        return expressions.contains(where: { $0.matches(value) })
+        return false
     }
 
     /// One line per active rule, for the Settings screen and `--explain`

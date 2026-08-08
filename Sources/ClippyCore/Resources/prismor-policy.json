@@ -32,8 +32,9 @@
       ],
       "reason": "Form fields (email, billing, shipping, contact) can contain the word \"address\" but are never browser chrome.",
       "rule_ids": [
-        "__veto__"
-      ]
+        "*"
+      ],
+      "type": "veto"
     }
   ],
   "rules": [
