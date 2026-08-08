@@ -19,9 +19,9 @@
 
   <br />
 
-  <img src="Resources/clippy-on-desktop.jpg" width="820" alt="Clippy floating over a Claude Code window, its balloon reading: Looks like you're chatting in Claude — so you're building me!" />
+  <img src="Resources/clippy-on-desktop.jpg" width="820" alt="Clippy floating over a Claude Code window, its balloon reading: Looks like you're chatting in Claude - so you're building me!" />
 
-  <sub><i>Clippy, live on the desktop, working out what you're doing from what's on screen.</i></sub>
+  <sub><i>Clippy, live on the desktop, working out on making itself</i></sub>
 </div>
 
 ---
