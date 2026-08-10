@@ -282,10 +282,20 @@ user's macOS Keychain.
 - **Follows your active display.** On a multi-monitor setup Clippy moves to
   whichever screen holds the app you just switched to, keeping its relative
   position, and recovers itself if the display it was on is unplugged.
-- Spoken replies and microphone dictation, with an optional local Whisper
-  engine (inspired by [OpenWhispr](https://github.com/OpenWhispr/openwhispr))
-  for more accurate, fully offline transcription — off by default, offered
-  once at first launch and toggleable any time in Settings
+- Spoken replies and microphone dictation, with **three engines to choose
+  between** — Apple's built-in recogniser (default, nothing to download,
+  streams as you speak), local Whisper, or local Parakeet v3, which detects
+  the language itself and is the fastest of the three on the Neural Engine.
+  Both local engines transcribe entirely on this Mac. Offered once at first
+  launch and switchable any time in Settings.
+
+  The local engines record the whole hold and transcribe once you let go —
+  the pipeline shape [Handy](https://github.com/cjpais/Handy) uses — so
+  nothing gets clipped off the end of a sentence, and a Silero VAD drops
+  silence before the model ever sees it, which is what stops Whisper
+  hallucinating a "Thank you." into a pause. Local models come from
+  [FluidAudio](https://github.com/FluidInference/FluidAudio) and
+  [WhisperKit](https://github.com/argmaxinc/WhisperKit).
 - **Push-to-talk dictation — hold a chord to speak, release to stop.** Two
   destinations:
   - **Hold ⌘⌥** to type into whatever editable field you had focused. If

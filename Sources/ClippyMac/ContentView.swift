@@ -66,6 +66,10 @@ struct ContentView: View {
     /// replacing it outright — `SpeechService.transcript` resets to "" at
     /// the start of every dictation session.
     @State private var draftBeforeDictation = ""
+    /// Set while the chat window is maximised; holds the frame to put back.
+    @State private var scrollMetrics = RetroScrollMetrics()
+    @State private var frameBeforeMaximize: NSRect?
+    @State private var isMaximized = false
 
     private let suggestions = [
         "Help me think through an idea",
@@ -133,16 +137,7 @@ struct ContentView: View {
             viewModel.errorMessage = nil
         }
         .onChange(of: speech.transcript) { _, newValue in
-            // Dictation aimed at another app must not also accumulate in
-            // Clippy's composer — that text is delivered on release instead.
-            guard !dictationTargetsExternalApp else { return }
-            guard speech.isListening || !newValue.isEmpty else { return }
-            guard !draftBeforeDictation.isEmpty else {
-                viewModel.draft = newValue
-                return
-            }
-            let needsSpace = !draftBeforeDictation.hasSuffix(" ") && !newValue.isEmpty
-            viewModel.draft = draftBeforeDictation + (needsSpace ? " " : "") + newValue
+            applyDictationToDraft(newValue)
         }
         .onAppear {
             installPasteMonitor()
@@ -155,9 +150,7 @@ struct ContentView: View {
             // duration loading the model: you speak, release, and nothing was
             // ever recorded. Warm it up at launch instead so the microphone
             // opens as soon as the chord engages.
-            if speech.useLocalWhisper {
-                Task { await speech.prepareWhisperModel() }
-            }
+            Task { await speech.prepareModel() }
         }
         .onDisappear {
             if let pasteMonitor {
@@ -183,15 +176,26 @@ struct ContentView: View {
     private var expandedAssistant: some View {
         VStack(spacing: 0) {
             header
-            Divider().opacity(0.55)
-            // The dashboard takes the conversation's place rather than opening
-            // a sheet: a background check is something you glance at beside the
-            // chat, not something worth losing the chat to look at.
-            if showScheduleDashboard {
-                ScheduleDashboardView()
-            } else {
-                conversation
+            // The transcript is a sunken white well, the way every chat client
+            // of the era framed its log. Without it the messages floated
+            // directly on the window face with nothing containing them, which
+            // is what made the window look unfinished — and made a message
+            // scrolled under the toolbar look clipped rather than scrolled.
+            Group {
+                // The dashboard takes the conversation's place rather than
+                // opening a sheet: a background check is something you glance
+                // at beside the chat, not something worth losing the chat to
+                // look at.
+                if showScheduleDashboard {
+                    ScheduleDashboardView()
+                } else {
+                    conversation
+                }
             }
+            .background(RetroPalette.fieldBackground)
+            .retroBevel(.sunken)
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
             if let plan = viewModel.pendingScreenPlan {
                 screenPlanBanner(plan)
             }
@@ -206,23 +210,22 @@ struct ContentView: View {
             }
             composer
         }
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color.accentColor.opacity(0.045)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        .background(RetroFace())
         .frame(minWidth: 420, minHeight: 560)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.28))
-        )
-        .shadow(color: .black.opacity(0.3), radius: 18, y: 8)
+        // Nothing may paint outside the window's own frame. Without this a
+        // subview that overshoots its bounds renders over the desktop, beyond
+        // the bevel, which reads as the window being broken rather than the
+        // subview being wrong.
+        .clipped()
+        // Square, bevelled, and forced to light: the palette is fixed 1995
+        // values with no dark variant, so an inherited dark scheme would put
+        // white label text on grey.
+        .retroBevel(.raised)
+        .environment(\.colorScheme, .light)
+        // Kept, though Windows 95 had no window shadow — this floats over the
+        // desktop rather than sitting in a desktop of its own, and without it
+        // the edge disappears against a light wallpaper.
+        .shadow(color: .black.opacity(0.35), radius: 12, y: 5)
         .padding(8)
     }
 
@@ -664,22 +667,45 @@ struct ContentView: View {
                     if external {
                         await deliverDictationToFocusedApp(dictated)
                     } else if route == .clippy {
-                        // The composer already holds the live transcript plus
-                        // anything typed before it, so send that rather than
-                        // the bare transcript.
+                        // Send the composer — transcript plus anything typed
+                        // before it — rather than the bare transcript. Applied
+                        // here rather than left to `onChange`, which SwiftUI
+                        // has not necessarily delivered yet.
+                        applyDictationToDraft(dictated)
                         viewModel.send()
                     }
                 }
             },
             cancel: { _ in
-                Task {
-                    _ = await speech.endPushToTalk()
-                    dictationTargetsExternalApp = false
-                }
+                speech.cancelPushToTalk()
+                dictationTargetsExternalApp = false
             }
         )
         monitor.startMonitoring()
         pushToTalk = monitor
+    }
+
+    /// Merges a transcript into the composer, preserving whatever the user had
+    /// already typed before dictation started.
+    ///
+    /// Recomputed from `draftBeforeDictation` every time rather than appended,
+    /// so calling it twice with the same transcript is a no-op — which is what
+    /// lets the release handler apply the transcript itself instead of waiting
+    /// for `onChange` to be delivered. That wait used to be free when the
+    /// transcript arrived live; with a batch engine the whole transcript lands
+    /// in one assignment right before `send()`, and SwiftUI would not have
+    /// updated the draft yet.
+    private func applyDictationToDraft(_ transcript: String) {
+        // Dictation aimed at another app must not also accumulate in Clippy's
+        // composer — that text is delivered on release instead.
+        guard !dictationTargetsExternalApp else { return }
+        guard speech.isListening || !transcript.isEmpty else { return }
+        guard !draftBeforeDictation.isEmpty else {
+            viewModel.draft = transcript
+            return
+        }
+        let needsSpace = !draftBeforeDictation.hasSuffix(" ") && !transcript.isEmpty
+        viewModel.draft = draftBeforeDictation + (needsSpace ? " " : "") + transcript
     }
 
     /// Types dictated text straight into whatever editable field the user had
@@ -769,91 +795,97 @@ struct ContentView: View {
         return "Hi! I am Clippy, your desktop assistant. Would you like some assistance today?"
     }
 
+    /// Title bar plus toolbar, in that order — the arrangement every window of
+    /// the era used. The close box collapses back to the floating paperclip
+    /// rather than quitting, which is what the old expand/collapse button did.
     private var header: some View {
-        HStack(spacing: 11) {
-            StaticClippyView()
-                .frame(width: 62, height: 62)
-                .scaleEffect(hoveringClippy ? 1.04 : 1)
-                .onHover { hoveringClippy = $0 }
-                .animation(.spring(response: 0.25), value: hoveringClippy)
+        VStack(spacing: 0) {
+            RetroTitleBar(
+                title: "Clippy",
+                // Minimising a chat window that lives as a desktop character
+                // means going back to being the character — not vanishing into
+                // the Dock, which is where the user would then have to hunt
+                // for it.
+                onMinimize: { viewModel.setExpanded(false) },
+                onMaximize: toggleMaximized,
+                isMaximized: isMaximized,
+                // Close gets out of the way entirely: back to the paperclip
+                // with its balloon dismissed. Reversible with a click on
+                // Clippy, so nothing is lost.
+                onClose: {
+                    viewModel.setExpanded(false)
+                    setCompactBalloonVisible(false)
+                }
+            )
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Clippy")
-                    .font(.system(size: 19, weight: .bold, design: .rounded))
-                    .foregroundStyle(.black)
+            HStack(spacing: 9) {
+                StaticClippyView()
+                    .frame(width: 40, height: 40)
+                    .scaleEffect(hoveringClippy ? 1.04 : 1)
+                    .onHover { hoveringClippy = $0 }
+                    .animation(.spring(response: 0.25), value: hoveringClippy)
+
                 HStack(spacing: 6) {
                     Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(Color.black.opacity(0.64))
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                         .lineLimit(1)
                     if speech.isListening {
                         ListeningWaveform(level: speech.audioLevel, barCount: 4, color: .red)
                             .frame(width: 24, height: 14)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(viewModel.providerReady ? Color.green : Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(viewModel.provider.shortTitle)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.black)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule()
-                        .fill(Color.white.opacity(0.7))
-                        .stroke(Color.black.opacity(0.1))
-                )
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 5) {
-                headerButton(
-                    "arrow.down.right.and.arrow.up.left",
-                    help: "Return to floating Clippy"
-                ) {
-                    viewModel.setExpanded(false)
-                }
-                // Only in the expanded window: the compact balloon has no
-                // room to render a dashboard.
-                if viewModel.isExpanded {
-                    headerButton(
-                        showScheduleDashboard ? "bubble.left.and.bubble.right.fill" : "clock.badge.checkmark",
-                        help: showScheduleDashboard ? "Back to conversation" : "Scheduled checks"
-                    ) {
-                        showScheduleDashboard.toggle()
+                HStack(spacing: 3) {
+                    // Only in the expanded window: the compact balloon has no
+                    // room to render a dashboard.
+                    if viewModel.isExpanded {
+                        headerButton(
+                            showScheduleDashboard ? "bubble.left.and.bubble.right.fill" : "clock.badge.checkmark",
+                            help: showScheduleDashboard ? "Back to conversation" : "Scheduled checks"
+                        ) {
+                            showScheduleDashboard.toggle()
+                        }
+                    }
+                    headerButton("clock.arrow.circlepath", help: "Chat history") {
+                        showHistory = true
+                    }
+                    headerButton("square.and.pencil", help: "New conversation") {
+                        viewModel.clearConversation()
+                    }
+                    headerButton("gearshape.fill", help: "Settings") {
+                        viewModel.showSettings = true
                     }
                 }
-                headerButton("clock.arrow.circlepath", help: "Chat history") {
-                    showHistory = true
-                }
-                headerButton("square.and.pencil", help: "New conversation") {
-                    viewModel.clearConversation()
-                }
-                headerButton("gearshape.fill", help: "Settings") {
-                    viewModel.showSettings = true
-                }
             }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 1.0, green: 0.99, blue: 0.84),
-                    Color(red: 1.0, green: 0.98, blue: 0.72)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.black.opacity(0.1))
-                .frame(height: 1)
+        // Deliberately no background: the window's translucent face shows
+        // through, so the toolbar and the conversation are one continuous
+        // tone. An opaque fill here left a visible seam under the toolbar.
+    }
+
+    /// Grows the chat window to fill the screen it's on, and back again.
+    ///
+    /// Done by hand rather than with `NSWindow.zoom(_:)` because the window is
+    /// borderless and transparent with its standard buttons hidden — `zoom`
+    /// on that window does nothing. The pre-maximise frame is remembered here
+    /// so Restore returns to the exact size the user had, not the default.
+    private func toggleMaximized() {
+        guard let window = NSApplication.shared.windows.first(where: { !$0.isSheet && $0.isVisible }),
+              let screen = window.screen ?? NSScreen.main
+        else { return }
+
+        if let frameBeforeMaximize {
+            window.setFrame(frameBeforeMaximize, display: true, animate: true)
+            self.frameBeforeMaximize = nil
+            isMaximized = false
+        } else {
+            frameBeforeMaximize = window.frame
+            window.setFrame(screen.visibleFrame, display: true, animate: true)
+            isMaximized = true
         }
     }
 
@@ -864,13 +896,14 @@ struct ContentView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.black)
-                .frame(width: 29, height: 29)
-                .background(Circle().fill(Color.white.opacity(0.65)))
-                .overlay(Circle().stroke(Color.black.opacity(0.1)))
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(RetroPalette.text)
+                .frame(width: 22, height: 20)
         }
-        .buttonStyle(.plain)
+        // A toolbar button is a small square bevel, not a circle. The glyphs
+        // stay SF Symbols: hand-drawn 16px icons would read as a different
+        // kind of pastiche, and these are legible at this size.
+        .buttonStyle(RetroButtonStyle(minWidth: 22))
         .help(help)
     }
 
@@ -886,11 +919,60 @@ struct ContentView: View {
 
     private var conversation: some View {
         ScrollViewReader { proxy in
+            HStack(spacing: 0) {
+                conversationScroll(proxy)
+                if scrollMetrics.needsScrollBar {
+                    RetroScrollBar(
+                        fraction: scrollMetrics.fraction,
+                        visibleRatio: scrollMetrics.visibleRatio,
+                        scrollTo: { fraction in scrollConversation(to: fraction, proxy: proxy) },
+                        step: { direction in stepConversation(by: direction, proxy: proxy) }
+                    )
+                }
+            }
+        }
+    }
+
+    /// Maps a scrollbar position onto a message to scroll to.
+    ///
+    /// Approximate by construction: messages are wildly different heights, so
+    /// a fraction of the *content* doesn't correspond to a fraction of the
+    /// *list*. Landing on the right neighbourhood is what a scrollbar is for,
+    /// and pre-macOS 15 there's no API to scroll a SwiftUI ScrollView to an
+    /// arbitrary offset.
+    private func scrollConversation(to fraction: Double, proxy: ScrollViewProxy) {
+        let messages = viewModel.visibleMessages
+        guard !messages.isEmpty else { return }
+        let clamped = min(max(fraction, 0), 1)
+        if clamped >= 0.999 {
+            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            return
+        }
+        let index = Int((Double(messages.count - 1) * clamped).rounded())
+        proxy.scrollTo(messages[index].id, anchor: .top)
+    }
+
+    private func stepConversation(by direction: Int, proxy: ScrollViewProxy) {
+        let messages = viewModel.visibleMessages
+        guard !messages.isEmpty else { return }
+        let current = Int((Double(messages.count - 1) * scrollMetrics.fraction).rounded())
+        let next = min(max(current + direction, 0), messages.count - 1)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+            proxy.scrollTo(messages[next].id, anchor: .top)
+        }
+    }
+
+    private func conversationScroll(_ proxy: ScrollViewProxy) -> some View {
+        GeometryReader { viewport in
             ScrollView {
-                LazyVStack(spacing: 14) {
-                    ForEach(viewModel.visibleMessages) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
+                LazyVStack(spacing: 11) {
+                    ForEach(Array(viewModel.visibleMessages.enumerated()), id: \.element.id) { index, message in
+                        MessageBubble(
+                            message: message,
+                            showsPortrait: index == 0
+                                || viewModel.visibleMessages[index - 1].role != message.role
+                        )
+                        .id(message.id)
                     }
 
                     if viewModel.visibleMessages.count == 1 {
@@ -914,8 +996,26 @@ struct ContentView: View {
                         .frame(height: 1)
                         .id("conversation-bottom")
                 }
-                .padding(18)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(
+                    GeometryReader { content in
+                        Color.clear.preference(
+                            key: RetroScrollMetricsKey.self,
+                            value: RetroScrollMetrics(
+                                offset: -content.frame(in: .named("chatScroll")).minY,
+                                contentHeight: content.size.height,
+                                viewportHeight: viewport.size.height
+                            )
+                        )
+                    }
+                )
             }
+            .coordinateSpace(name: "chatScroll")
+            // The native indicator is replaced by RetroScrollBar, which is
+            // drawn as part of the window rather than floating over it.
+            .scrollIndicators(.hidden)
+            .onPreferenceChange(RetroScrollMetricsKey.self) { scrollMetrics = $0 }
             .onAppear {
                 // A full-chat open creates this view anew. Deferring one run-loop
                 // lets LazyVStack lay out recent messages before the initial jump.
@@ -1249,36 +1349,36 @@ struct ContentView: View {
                 Button {
                     chooseAttachments()
                 } label: {
-                    Image(systemName: "paperclip.circle.fill")
-                        .font(.system(size: 27))
-                        .foregroundStyle(Color.secondary)
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 13))
+                        .foregroundStyle(RetroPalette.text)
+                        .frame(width: 24, height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RetroButtonStyle(minWidth: 24))
                 .disabled(viewModel.isLoading)
                 .help("Attach a file")
 
                 Button {
                     viewModel.pasteAttachmentsOrExplain()
                 } label: {
-                    Image(systemName: "doc.on.clipboard.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(Color.secondary)
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 13))
+                        .foregroundStyle(RetroPalette.text)
+                        .frame(width: 24, height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RetroButtonStyle(minWidth: 24))
                 .disabled(viewModel.isLoading)
                 .help("Paste an image or file")
 
                 TextField("Ask Clippy anything…", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
-                    .font(.body)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 11)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(Color(nsColor: .textBackgroundColor))
-                            .stroke(Color.secondary.opacity(0.22))
-                    )
+                    .font(RetroPalette.font(12))
+                    .foregroundStyle(RetroPalette.text)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
+                    .background(RetroPalette.fieldBackground)
+                    .retroBevel(.sunken)
                     .onSubmit {
                         if !NSEvent.modifierFlags.contains(.shift) {
                             viewModel.send()
@@ -1291,24 +1391,27 @@ struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 }
 
-                if speech.isPreparingWhisperModel {
+                if speech.isPreparingModel || speech.isTranscribing {
                     // The one-time (or first-launch-of-a-session) local
                     // model load can take several seconds with nothing else
                     // on screen changing — without this the mic button just
-                    // looks unresponsive the whole time.
+                    // looks unresponsive the whole time. The same is true of
+                    // the gap between releasing the keys and a batch engine
+                    // producing its transcript.
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 27, height: 27)
-                        .help("Loading local Whisper model…")
+                        .help(speech.isPreparingModel ? "Loading \(speech.engine.displayName)…" : "Transcribing…")
                 } else {
                     Button {
                         Task { await speech.toggleListening() }
                     } label: {
-                        Image(systemName: speech.isListening ? "waveform.circle.fill" : "mic.circle.fill")
-                            .font(.system(size: 27))
-                            .foregroundStyle(speech.isListening ? .red : Color.secondary)
+                        Image(systemName: speech.isListening ? "waveform" : "mic")
+                            .font(.system(size: 13))
+                            .foregroundStyle(speech.isListening ? Color.red : RetroPalette.text)
+                            .frame(width: 24, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RetroButtonStyle(minWidth: 24))
                     .listeningPulse(isActive: speech.isListening)
                     .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌥⇧ to ask Clippy")
                     .animation(.easeOut(duration: 0.16), value: speech.isListening)
@@ -1321,10 +1424,11 @@ struct ContentView: View {
                         viewModel.send()
                     }
                 } label: {
-                    Image(systemName: (viewModel.isLoading || viewModel.isRunningScreenPlan) ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 29))
+                    Text((viewModel.isLoading || viewModel.isRunningScreenPlan) ? "Stop" : "Send")
+                        .font(RetroPalette.font(11))
+                        .frame(height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RetroButtonStyle(minWidth: 46))
                 .disabled(
                     (viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                      && viewModel.pendingAttachments.isEmpty)
@@ -1340,16 +1444,20 @@ struct ContentView: View {
                      : viewModel.isRunningScreenPlan
                      ? "Running a screen plan…"
                      : (viewModel.providerReady ? "Connected via \(viewModel.provider.title)" : "Setup needed for \(viewModel.provider.title)"))
-                    .foregroundStyle(viewModel.providerReady ? Color.secondary : Color.orange)
+                    .foregroundStyle(viewModel.providerReady ? RetroPalette.text : RetroPalette.errorText)
                 Spacer()
                 if viewModel.speakReplies {
-                    Label("Voice on", systemImage: "speaker.wave.2.fill")
+                    Text("Voice on")
                 }
             }
-            .font(.caption2)
+            .font(RetroPalette.font(10))
+            // The status line is a sunken strip along the bottom, the way
+            // every window of the era ended.
+            .padding(.horizontal, 5)
+            .padding(.vertical, 3)
+            .retroBevel(.sunken)
         }
-        .padding(14)
-        .background(.ultraThinMaterial)
+        .padding(8)
     }
 
     private var elapsedText: String {
@@ -1372,13 +1480,28 @@ struct ContentView: View {
 
 private struct MessageBubble: View {
     let message: ChatMessage
+    /// False for a reply that follows another reply — one portrait per run of
+    /// messages from the same side, rather than a column of identical
+    /// paperclips down the transcript.
+    var showsPortrait = true
+
+    @State private var isHovered = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if message.role == .user { Spacer(minLength: 58) }
 
             if message.role == .assistant {
-                ClippyPortrait()
+                // The slot is kept even when the portrait is hidden, so
+                // messages in a run stay aligned with the one that has it.
+                Group {
+                    if showsPortrait {
+                        ClippyPortrait()
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 30)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -1390,19 +1513,27 @@ private struct MessageBubble: View {
                     }
                 }
                 if message.role == .assistant {
+                    // Kept in the layout at all times and only faded in, so
+                    // the transcript stays quiet without messages resizing
+                    // under the pointer as you move across them.
                     AnswerActions(content: message.content)
+                        .opacity(isHovered ? 1 : 0)
                 }
             }
+            .onHover { isHovered = $0 }
             .textSelection(.enabled)
-                .font(.system(size: 14))
+                .font(RetroPalette.font(12))
                 .lineSpacing(3)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 15)
-                        .fill(message.role == .user ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
-                )
-                .foregroundStyle(message.role == .user ? Color.white : Color.primary)
+                .padding(.horizontal, message.role == .user ? 9 : 2)
+                .padding(.vertical, message.role == .user ? 7 : 2)
+                // Inside the white well, Clippy's replies are just text on the
+                // page — boxing them drew a border around white on white and
+                // gave the log a boxes-inside-boxes look. Yours stay a grey
+                // panel, which is what distinguishes the two sides now that
+                // the well provides the outer frame.
+                .background(message.role == .user ? RetroPalette.light : Color.clear)
+                .retroBevel(message.role == .user ? .staticEdge : .none)
+                .foregroundStyle(RetroPalette.text)
 
             if message.role == .assistant { Spacer(minLength: 58) }
         }
@@ -1419,20 +1550,32 @@ private struct AnswerActions: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(content, forType: .string)
             } label: {
-                Label("Copy", systemImage: "doc.on.doc")
+                buttonLabel("doc.on.doc", "Copy")
             }
             if let url = Self.firstLink(in: content) {
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
-                    Label("Open link", systemImage: "arrow.up.right.square")
+                    buttonLabel("arrow.up.right.square", "Open link")
                 }
             }
         }
-        .font(.system(size: 10, weight: .medium))
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
-        .padding(.top, 2)
+        // Small raised buttons rather than tinted links: a coloured text link
+        // is a web idiom the era predates. Icon left of the label, which is
+        // where every toolbar of the period put it, and compact so it reads as
+        // an action on the message rather than a dialog button sitting in one.
+        .buttonStyle(RetroButtonStyle(minWidth: 0, compact: true))
+        .padding(.top, 4)
+    }
+
+    private func buttonLabel(_ systemName: String, _ title: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemName)
+                .font(.system(size: 9))
+            Text(title)
+                .font(RetroPalette.font(10))
+        }
+        .foregroundStyle(RetroPalette.text)
     }
 
     static func firstLink(in text: String) -> URL? {
@@ -1724,15 +1867,7 @@ struct SettingsView: View {
     @State private var screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Clippy Settings")
-                    .font(.title2.bold())
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-
+        VStack(alignment: .leading, spacing: 12) {
             // Scrollable: a fixed-height VStack silently overflows past the
             // sheet's frame instead of resizing it — the Dictation section
             // pushed total content past 680pt and clipped the header (title
@@ -1742,15 +1877,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 18) {
             GroupBox("AI provider") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Provider", selection: $viewModel.provider) {
-                        ForEach(AIProvider.allCases) { provider in
-                            Text(provider.title).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    RetroRadioGroup(
+                        options: AIProvider.allCases.map { ($0, $0.title) },
+                        selection: $viewModel.provider
+                    )
                     Text(viewModel.provider.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
                 }
                 .padding(8)
             }
@@ -1759,11 +1892,10 @@ struct SettingsView: View {
                 GroupBox("Credentials") {
                     VStack(alignment: .leading, spacing: 10) {
                         SecureField("\(viewModel.provider.shortTitle) API key", text: $apiKey)
-                            .textFieldStyle(.roundedBorder)
                         HStack {
                             Text("Stored only in your macOS Keychain.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(RetroPalette.font(11))
+                                .foregroundStyle(RetroPalette.text)
                             Spacer()
                             Button("Save key") {
                                 do {
@@ -1775,7 +1907,7 @@ struct SettingsView: View {
                             }
                         }
                         if let saveError {
-                            Text(saveError).font(.caption).foregroundStyle(.red)
+                            Text(saveError).font(RetroPalette.font(11)).foregroundStyle(RetroPalette.errorText)
                         }
                     }
                     .padding(8)
@@ -1786,22 +1918,21 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if viewModel.provider.needsAPIKey {
                         TextField("Model", text: $viewModel.model)
-                            .textFieldStyle(.roundedBorder)
                     } else {
                         Text("The CLI’s configured default model will be used.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(RetroPalette.font(11))
+                            .foregroundStyle(RetroPalette.text)
                     }
                     Toggle("Read replies aloud", isOn: $viewModel.speakReplies)
                     Toggle("Keep Clippy above other windows", isOn: $viewModel.alwaysOnTop)
                     Toggle("Animate Clippy", isOn: $viewModel.animateClippy)
                     Text("Off keeps the paperclip still and reduces visual motion.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                     Toggle("Always run screen plans without confirming", isOn: $viewModel.alwaysAutoRunScreenPlans)
                     Text("Off (recommended) waits for you to tap Run plan on anything beyond a single app switch or address-bar navigation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                 }
                 .padding(8)
             }
@@ -1812,31 +1943,31 @@ struct SettingsView: View {
             GroupBox("What Clippy remembers") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Durable facts picked up from your conversations, kept across chats so you don’t have to repeat yourself. Delete anything that’s wrong or that you’d rather it didn’t know.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                     if viewModel.memories.isEmpty {
                         Text("Nothing yet — it starts remembering once you tell it something about yourself.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(RetroPalette.font(11))
+                            .foregroundStyle(RetroPalette.text)
                     } else {
                         ForEach(viewModel.memories) { fact in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(fact.text)
-                                    .font(.callout)
+                                    .font(RetroPalette.font(11))
                                     .fixedSize(horizontal: false, vertical: true)
                                 Spacer(minLength: 8)
                                 Button {
                                     viewModel.forget(fact)
                                 } label: {
-                                    Image(systemName: "trash")
+                                    Text("Delete")
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(RetroButtonStyle(minWidth: 54))
                                 .help("Forget this")
                                 .accessibilityLabel("Forget: \(fact.text)")
                             }
                         }
                         Button("Forget everything") { viewModel.forgetEverything() }
-                            .font(.caption)
+                            .font(RetroPalette.font(11))
                     }
                 }
                 .padding(8)
@@ -1845,8 +1976,8 @@ struct SettingsView: View {
             GroupBox("Balloon menu") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("The options offered by the floating paperclip. Rename them, reorder them, or untick ones you never use. Each row keeps what it does — only the wording is yours.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
 
                     ForEach($viewModel.balloonActions) { $action in
                         HStack(spacing: 8) {
@@ -1855,25 +1986,24 @@ struct SettingsView: View {
                                 .help(action.isVisible ? "Shown in the balloon" : "Hidden")
                             VStack(alignment: .leading, spacing: 2) {
                                 TextField(action.kind.defaultTitle, text: $action.title)
-                                    .textFieldStyle(.roundedBorder)
-                                Text(action.kind.behaviourNote)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                        Text(action.kind.behaviourNote)
+                                    .font(RetroPalette.font(10))
+                                    .foregroundStyle(RetroPalette.text)
                             }
                             VStack(spacing: 2) {
                                 Button {
                                     viewModel.moveBalloonAction(id: action.id, by: -1)
                                 } label: {
-                                    Image(systemName: "chevron.up")
+                                    Text("▲")
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(RetroButtonStyle(minWidth: 20))
                                 .disabled(viewModel.balloonActions.first?.id == action.id)
                                 Button {
                                     viewModel.moveBalloonAction(id: action.id, by: 1)
                                 } label: {
-                                    Image(systemName: "chevron.down")
+                                    Text("▼")
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(RetroButtonStyle(minWidth: 20))
                                 .disabled(viewModel.balloonActions.last?.id == action.id)
                             }
                         }
@@ -1882,7 +2012,7 @@ struct SettingsView: View {
                     HStack {
                         Spacer()
                         Button("Reset to defaults") { viewModel.resetBalloonActions() }
-                            .font(.caption)
+                            .font(RetroPalette.font(11))
                     }
                 }
                 .padding(8)
@@ -1891,17 +2021,17 @@ struct SettingsView: View {
             GroupBox("Custom prompts") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Save a prompt you use often as a slash command, then type it in the chat. Anything you add after the command is appended to the prompt, so `/review this function` works too.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                     Text("Built in: `/clear` starts a new session, `/help` lists everything.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.text)
 
                     ForEach($viewModel.customPrompts) { $prompt in
                         HStack(alignment: .top, spacing: 8) {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 4) {
-                                    Text("/").foregroundStyle(.secondary)
+                                    Text("/").foregroundStyle(RetroPalette.text)
                                     TextField("command", text: Binding(
                                         get: { prompt.command },
                                         // Normalizing on every keystroke keeps
@@ -1910,21 +2040,19 @@ struct SettingsView: View {
                                         // never be typed successfully.
                                         set: { prompt.command = CustomPrompt.normalize($0) }
                                     ))
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 130)
+                                            .frame(width: 130)
                                 }
                                 TextField("What should Clippy do?", text: $prompt.prompt, axis: .vertical)
-                                    .textFieldStyle(.roundedBorder)
-                                    .lineLimit(1...4)
+                                            .lineLimit(1...4)
                                 Toggle("Show in balloon menu", isOn: $prompt.showsInBalloon)
-                                    .font(.caption)
+                                    .font(RetroPalette.font(11))
                             }
                             Button {
                                 viewModel.customPrompts.removeAll { $0.id == prompt.id }
                             } label: {
-                                Image(systemName: "trash")
+                                Text("Delete")
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(RetroButtonStyle(minWidth: 54))
                             .help("Delete this prompt")
                         }
 
@@ -1934,15 +2062,15 @@ struct SettingsView: View {
                                     ? "`/\(prompt.command)` is built in — pick another name."
                                     : "Needs both a command and a prompt to be usable."
                             )
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .font(RetroPalette.font(10))
+                            .foregroundStyle(RetroPalette.errorText)
                         }
                     }
 
                     Button {
                         viewModel.customPrompts.append(CustomPrompt(command: "", prompt: ""))
                     } label: {
-                        Label("Add prompt", systemImage: "plus")
+                        Text("Add prompt")
                     }
                 }
                 .padding(8)
@@ -1950,27 +2078,31 @@ struct SettingsView: View {
 
             GroupBox("Dictation") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle(isOn: Binding(
-                        get: { speech.useLocalWhisper },
-                        set: { newValue in
-                            speech.useLocalWhisper = newValue
-                            if newValue { Task { await speech.prepareWhisperModel() } }
-                        }
-                    )) {
-                        Text("Use local Whisper dictation")
-                    }
-                    Text("More accurate, fully offline dictation inspired by OpenWhispr — your voice never leaves this Mac. Off uses Apple's built-in Speech framework instead. First use downloads a one-time local model (about 150 MB).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if speech.isPreparingWhisperModel {
-                        ProgressView(value: speech.whisperModelDownloadProgress)
+                    RetroRadioGroup(
+                        options: DictationEngine.allCases.map { ($0, $0.displayName) },
+                        selection: Binding(
+                            get: { speech.engine },
+                            set: { newValue in
+                                speech.engine = newValue
+                                Task { await speech.prepareModel() }
+                            }
+                        )
+                    )
+                    Text(speech.engine.detail)
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
+                    Text("The local engines record the whole time you hold the keys and transcribe once you let go, so nothing gets clipped. Silence is dropped before the model ever sees it.")
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
+                    if speech.isPreparingModel {
+                        RetroProgressBar(value: speech.modelDownloadProgress)
                         Text("Downloading model…")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else if speech.useLocalWhisper && speech.whisperModelReady {
-                        Label("Model ready", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Color.green)
+                            .font(RetroPalette.font(10))
+                            .foregroundStyle(RetroPalette.disabledText)
+                    } else if speech.readyEngines.contains(speech.engine) {
+                        Text("✓ Model ready")
+                            .font(RetroPalette.font(10))
+                            .foregroundStyle(RetroPalette.text)
                     }
                 }
                 .padding(8)
@@ -1979,15 +2111,16 @@ struct SettingsView: View {
             GroupBox("Write in other apps") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Clippy can insert generated text into the last editable field you focused. It never types into secure fields or presses Send.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                     HStack {
-                        Label(
-                            accessibilityEnabled ? "Accessibility enabled" : "Accessibility permission required",
-                            systemImage: accessibilityEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                        Text(
+                            accessibilityEnabled
+                                ? "✓ Accessibility enabled"
+                                : "! Accessibility permission required"
                         )
-                        .font(.caption)
-                        .foregroundStyle(accessibilityEnabled ? Color.green : Color.orange)
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.text)
                         Spacer()
                         if accessibilityEnabled {
                             Button("Open System Settings") {
@@ -2009,19 +2142,16 @@ struct SettingsView: View {
             GroupBox("See and guide on screen") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("With Screen Recording and Accessibility, Clippy can inspect the current app, highlight controls, and prepare clicks. Every click still requires your confirmation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
                     HStack {
-                        Label(
+                        Text(
                             screenRecordingEnabled
-                                ? "Screen awareness enabled"
-                                : "Screen Recording permission required",
-                            systemImage: screenRecordingEnabled
-                                ? "eye.circle.fill"
-                                : "eye.slash.circle.fill"
+                                ? "✓ Screen awareness enabled"
+                                : "! Screen Recording permission required"
                         )
-                        .font(.caption)
-                        .foregroundStyle(screenRecordingEnabled ? Color.green : Color.orange)
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.text)
                         Spacer()
                         if screenRecordingEnabled {
                             Button("Open System Settings") {
@@ -2042,14 +2172,25 @@ struct SettingsView: View {
             }
 
             Text("Subscription modes use the locally installed CLI and its existing login. API usage is billed by the selected provider.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(RetroPalette.font(10))
+                .foregroundStyle(RetroPalette.disabledText)
                 }
                 .padding(.vertical, 2)
             }
+
+            // Classic dialogs put their commit button bottom-right. Only OK,
+            // no Cancel: every setting here applies the moment it changes, so
+            // a Cancel would promise a rollback that doesn't exist.
+            HStack {
+                Spacer()
+                Button("OK") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
         }
-        .padding(22)
+        .padding(14)
+        .retroDialog()
         .frame(width: 560, height: 680)
+        .retroWindow(title: "Clippy Settings") { dismiss() }
         .onAppear {
             apiKey = viewModel.currentAPIKey()
             accessibilityEnabled = ScreenTypingService.shared.isAuthorized

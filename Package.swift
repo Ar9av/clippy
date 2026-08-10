@@ -14,7 +14,11 @@ let package = Package(
     dependencies: [
         // Local on-device transcription for dictation, used as an optional
         // alternative to Apple's Speech framework (see SpeechService.swift).
-        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0")
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0"),
+        // Parakeet v3 (multilingual ASR) and Silero VAD, both as CoreML models
+        // that run on the Neural Engine. The VAD is what keeps silence away
+        // from the transcriber; see DictationRecorder.swift.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.5")
     ],
     targets: [
         .target(
@@ -32,7 +36,8 @@ let package = Package(
             name: "ClippyMac",
             dependencies: [
                 "ClippyCore",
-                .product(name: "WhisperKit", package: "argmax-oss-swift")
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                .product(name: "FluidAudio", package: "FluidAudio")
             ],
             path: "Sources/ClippyMac",
             resources: [

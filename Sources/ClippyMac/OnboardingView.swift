@@ -79,46 +79,51 @@ struct OnboardingView: View {
         .onAppear { permissions.refresh() }
     }
 
-    /// Optional, off by default: local Whisper-quality dictation (inspired
-    /// by OpenWhispr) instead of Apple's Speech framework. Distinct from
+    /// Optional: which recogniser dictation runs through. Distinct from
     /// `permissionRow` above since there's no system permission to grant —
-    /// just a one-time model download the user opts into.
+    /// just a one-time model download the user opts into. Apple's engine is
+    /// the default and needs nothing.
     private var whisperDictationRow: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Label(
-                        "Local Whisper Dictation",
-                        systemImage: speech.useLocalWhisper ? "checkmark.circle.fill" : "circle"
+                        "Dictation Engine",
+                        systemImage: speech.engine.needsModelDownload ? "checkmark.circle.fill" : "circle"
                     )
-                    .foregroundStyle(speech.useLocalWhisper ? Color.green : Color.primary)
+                    .foregroundStyle(speech.engine.needsModelDownload ? Color.green : Color.primary)
                     Spacer()
                     Text("Optional").font(.caption).foregroundStyle(.secondary)
                 }
-                Text("A more accurate, fully offline dictation engine — inspired by OpenWhispr. Your voice is transcribed on this Mac and never leaves it. First use downloads a one-time local model (about 150 MB).")
+                Text("The local engines transcribe entirely on this Mac — your voice never leaves it — and each downloads its model once. Apple's needs no download but may send audio off the machine.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if speech.isPreparingWhisperModel {
-                    ProgressView(value: speech.whisperModelDownloadProgress)
+                if speech.isPreparingModel {
+                    ProgressView(value: speech.modelDownloadProgress)
                     Text("Downloading model…")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
-                    Toggle(isOn: Binding(
-                        get: { speech.useLocalWhisper },
+                    Picker("", selection: Binding(
+                        get: { speech.engine },
                         set: { newValue in
-                            speech.useLocalWhisper = newValue
-                            if newValue { Task { await speech.prepareWhisperModel() } }
+                            speech.engine = newValue
+                            Task { await speech.prepareModel() }
                         }
                     )) {
-                        Text(speech.useLocalWhisper ? "Enabled" : "Keep using Apple's built-in dictation")
-                            .font(.caption)
+                        ForEach(DictationEngine.allCases) { engine in
+                            Text(engine.displayName).tag(engine)
+                        }
                     }
-                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .pickerStyle(.radioGroup)
+                    Text(speech.engine.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
-                if speech.useLocalWhisper, let error = speech.authorizationError {
+                if speech.engine.needsModelDownload, let error = speech.authorizationError {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
             }
