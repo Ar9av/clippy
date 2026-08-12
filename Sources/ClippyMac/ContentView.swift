@@ -53,6 +53,7 @@ struct ContentView: View {
     @State private var compactBalloonVisible = true
     @State private var pasteMonitor: Any?
     @State private var pushToTalk: PushToTalkMonitor?
+    @State private var voiceActionMonitor: VoiceActionMonitor?
     /// Whether the in-flight push-to-talk session was started while another
     /// app was frontmost. Captured at press time, because by the time the keys
     /// come back up the answer may have changed — and it decides whether the
@@ -85,7 +86,7 @@ struct ContentView: View {
         // calls between actions) is a separate flag, and without this check
         // the sprite falls through to idle for the entire time Clippy is
         // actually working through a task.
-        if viewModel.isLoading || viewModel.isRunningScreenPlan { return .thinking }
+        if viewModel.isLoading || viewModel.isRunningScreenPlan || viewModel.isRunningVoiceAction { return .thinking }
         if speech.isSpeaking { return .talking }
         if viewModel.errorMessage != nil { return .alert }
         if viewModel.recentlyCompleted { return .success }
@@ -142,6 +143,7 @@ struct ContentView: View {
         .onAppear {
             installPasteMonitor()
             installPushToTalkMonitor()
+            installVoiceActionMonitor()
             publishBalloonVisibility()
             // A session may have ended while Clippy was closed, so this both
             // picks up what is already waiting and starts the poll.
@@ -159,6 +161,8 @@ struct ContentView: View {
             }
             pushToTalk?.stopMonitoring()
             pushToTalk = nil
+            voiceActionMonitor?.stopMonitoring()
+            voiceActionMonitor = nil
         }
         .alert(
             "\(viewModel.character.title) needs permission",
@@ -694,6 +698,47 @@ struct ContentView: View {
         pushToTalk = monitor
     }
 
+    private func installVoiceActionMonitor() {
+        guard voiceActionMonitor == nil else { return }
+        let monitor = VoiceActionMonitor(
+            actions: { viewModel.customPrompts },
+            reservedShortcuts: {
+                [DictationShortcutStore.get(.focusedApp), DictationShortcutStore.get(.clippy)]
+            },
+            start: { _ in
+                // Keep live partial transcripts out of Clippy's composer and
+                // preserve the previously focused terminal/editor as target.
+                dictationTargetsExternalApp = true
+                ScreenTypingService.shared.pinCurrentTargetForVoiceAction()
+                Task { await speech.beginPushToTalk() }
+            },
+            stop: { actionID in
+                Task {
+                    let dictated = await speech.endPushToTalk()
+                    dictationTargetsExternalApp = false
+                    guard !dictated.isEmpty,
+                          let action = viewModel.customPrompts.first(where: { $0.id == actionID }) else {
+                        ScreenTypingService.shared.clearPinnedVoiceTarget()
+                        return
+                    }
+                    do {
+                        let output = try await viewModel.runVoiceAction(action, transcript: dictated)
+                        _ = try await ScreenTypingService.shared.insertIntoPinnedVoiceTarget(output)
+                    } catch {
+                        viewModel.errorMessage = "Voice action failed: \(error.localizedDescription)"
+                    }
+                }
+            },
+            cancel: { _ in
+                speech.cancelPushToTalk()
+                dictationTargetsExternalApp = false
+                ScreenTypingService.shared.clearPinnedVoiceTarget()
+            }
+        )
+        monitor.startMonitoring()
+        voiceActionMonitor = monitor
+    }
+
     /// Merges a transcript into the composer, preserving whatever the user had
     /// already typed before dictation started.
     ///
@@ -783,7 +828,7 @@ struct ContentView: View {
         if let error = viewModel.errorMessage {
             return "I couldn’t finish that: \(error)"
         }
-        if viewModel.isLoading { return viewModel.activityMessage }
+        if viewModel.isLoading || viewModel.isRunningVoiceAction { return viewModel.activityMessage }
         if viewModel.activityMessage.hasPrefix("Stopped") { return viewModel.activityMessage }
         if !compactInputActive {
             switch compactPanel {
@@ -1862,6 +1907,11 @@ private struct ActivityBubble: View {
     }
 }
 
+private enum ShortcutCaptureTarget: Equatable {
+    case dictation(DictationRoute)
+    case voiceAction(UUID)
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
     // See the matching comment in OnboardingView.swift: `SpeechService` is a
@@ -1878,7 +1928,7 @@ struct SettingsView: View {
     @State private var dictationTestActive = false
     @State private var focusedDictationShortcut = DictationShortcutStore.get(.focusedApp)
     @State private var clippyDictationShortcut = DictationShortcutStore.get(.clippy)
-    @State private var recordingShortcut: DictationRoute?
+    @State private var recordingShortcut: ShortcutCaptureTarget?
     @State private var shortcutCaptureMonitor: Any?
     @State private var modifierCaptureTask: Task<Void, Never>?
 
@@ -2077,6 +2127,12 @@ struct SettingsView: View {
                     Text("Built in: `/clear` starts a new session, `/help` lists everything.")
                         .font(RetroPalette.font(10))
                         .foregroundStyle(RetroPalette.text)
+                    Text("Optional voice action: hold its shortcut in any app, speak, and the prompt’s result is inserted back into that field without pressing Enter.")
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
+                    Text("The built-in /command action uses ⌥⌃Space to turn speech into a terminal command.")
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
 
                     ForEach($viewModel.customPrompts) { $prompt in
                         HStack(alignment: .top, spacing: 8) {
@@ -2097,6 +2153,26 @@ struct SettingsView: View {
                                             .lineLimit(1...4)
                                 Toggle("Show in balloon menu", isOn: $prompt.showsInBalloon)
                                     .font(RetroPalette.font(11))
+                                HStack(spacing: 8) {
+                                    Text("Voice action")
+                                        .font(RetroPalette.font(10))
+                                    Spacer()
+                                    if recordingShortcut == .voiceAction(prompt.id) {
+                                        Text("Hold keys for 0.5s…")
+                                            .font(RetroPalette.font(10))
+                                        Button("Cancel") { stopShortcutCapture() }
+                                            .buttonStyle(RetroButtonStyle(minWidth: 50))
+                                    } else {
+                                        Text(prompt.voiceShortcut?.displayName ?? "Not set")
+                                            .font(RetroPalette.font(10))
+                                        Button("Record") { startShortcutCapture(for: .voiceAction(prompt.id)) }
+                                            .buttonStyle(RetroButtonStyle(minWidth: 54))
+                                        if prompt.voiceShortcut != nil {
+                                            Button("Clear") { prompt.voiceShortcut = nil }
+                                                .buttonStyle(RetroButtonStyle(minWidth: 44))
+                                        }
+                                    }
+                                }
                             }
                             Button {
                                 viewModel.customPrompts.removeAll { $0.id == prompt.id }
@@ -2311,7 +2387,7 @@ struct SettingsView: View {
             Text(title)
                 .font(RetroPalette.font(11))
             Spacer()
-            if recordingShortcut == route {
+            if recordingShortcut == .dictation(route) {
                 Text("Hold keys for 0.5s…")
                     .font(RetroPalette.font(10))
                     .foregroundStyle(RetroPalette.disabledText)
@@ -2320,15 +2396,15 @@ struct SettingsView: View {
             } else {
                 Text(shortcut.wrappedValue.displayName)
                     .font(RetroPalette.font(11))
-                Button("Record") { startShortcutCapture(for: route) }
+                Button("Record") { startShortcutCapture(for: .dictation(route)) }
                     .buttonStyle(RetroButtonStyle(minWidth: 58))
             }
         }
     }
 
-    private func startShortcutCapture(for route: DictationRoute) {
+    private func startShortcutCapture(for target: ShortcutCaptureTarget) {
         stopShortcutCapture()
-        recordingShortcut = route
+        recordingShortcut = target
         DictationShortcutCapture.isActive = true
         shortcutCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -2343,7 +2419,7 @@ struct SettingsView: View {
                         modifiersRawValue: modifiers.rawValue,
                         keyDisplay: event.charactersIgnoringModifiers?.uppercased()
                     ),
-                    for: route
+                    for: target
                 )
                 return nil
             }
@@ -2355,20 +2431,43 @@ struct SettingsView: View {
             modifierCaptureTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled,
-                      recordingShortcut == route,
+                      recordingShortcut == target,
                       currentModifierFlags == modifiers
                 else { return }
-                saveShortcut(DictationShortcut(keyCode: nil, modifiersRawValue: modifiers.rawValue), for: route)
+                saveShortcut(DictationShortcut(keyCode: nil, modifiersRawValue: modifiers.rawValue), for: target)
             }
             return event
         }
     }
 
-    private func saveShortcut(_ shortcut: DictationShortcut, for route: DictationRoute) {
-        if route == .focusedApp { focusedDictationShortcut = shortcut }
-        else { clippyDictationShortcut = shortcut }
-        DictationShortcutStore.set(shortcut, for: route)
+    private func saveShortcut(_ shortcut: DictationShortcut, for target: ShortcutCaptureTarget) {
+        if shortcutIsAlreadyUsed(shortcut, excluding: target) {
+            saveError = "That shortcut is already assigned. Choose a different combination."
+            stopShortcutCapture()
+            return
+        }
+        switch target {
+        case .dictation(let route):
+            if route == .focusedApp { focusedDictationShortcut = shortcut }
+            else { clippyDictationShortcut = shortcut }
+            DictationShortcutStore.set(shortcut, for: route)
+        case .voiceAction(let id):
+            guard let index = viewModel.customPrompts.firstIndex(where: { $0.id == id }) else { break }
+            viewModel.customPrompts[index].voiceShortcut = shortcut
+            if viewModel.customPrompts[index].voiceOutputKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                viewModel.customPrompts[index].voiceOutputKey = "result"
+            }
+        }
+        saveError = nil
         stopShortcutCapture()
+    }
+
+    private func shortcutIsAlreadyUsed(_ shortcut: DictationShortcut, excluding target: ShortcutCaptureTarget) -> Bool {
+        if target != .dictation(.focusedApp), shortcut == focusedDictationShortcut { return true }
+        if target != .dictation(.clippy), shortcut == clippyDictationShortcut { return true }
+        return viewModel.customPrompts.contains {
+            $0.voiceShortcut == shortcut && target != .voiceAction($0.id)
+        }
     }
 
     private func stopShortcutCapture() {

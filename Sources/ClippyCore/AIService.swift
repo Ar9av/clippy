@@ -481,6 +481,54 @@ public enum AIService {
         }
     }
 
+    /// A small, history-free request for push-to-talk transformations. Voice
+    /// actions do not need Clippy's persona, memory, screen-planning tools, or
+    /// chat transcript; omitting all of that makes CLI and API providers start
+    /// generating sooner and avoids unrelated formatting instructions.
+    public static func fastTransform(
+        prompt: String,
+        provider: AIProvider,
+        model: String,
+        apiKey: String?,
+        localBaseURL: String = AIProvider.defaultLocalBaseURL
+    ) async throws -> String {
+        let instruction = "Return only the exact final text. No explanation, label, quotes, or Markdown."
+        let messages = [ChatMessage(role: .user, content: prompt)]
+        let cliPrompt = "\(instruction)\n\n\(prompt)"
+        switch provider {
+        case .claudeCLI:
+            return try await runClaude(prompt: cliPrompt, attachments: [])
+        case .codexCLI:
+            return try await runCodex(prompt: cliPrompt, attachments: [])
+        case .openAI:
+            guard let apiKey, !apiKey.isEmpty else { throw ClippyError.missingAPIKey("OpenAI") }
+            return try await callOpenAI(
+                messages: messages,
+                model: model,
+                apiKey: apiKey,
+                attachments: [],
+                instructions: instruction
+            )
+        case .anthropic:
+            guard let apiKey, !apiKey.isEmpty else { throw ClippyError.missingAPIKey("Anthropic") }
+            return try await callAnthropic(
+                messages: messages,
+                model: model,
+                apiKey: apiKey,
+                attachments: [],
+                instructions: instruction
+            )
+        case .local:
+            return try await callLocal(
+                messages: messages,
+                model: model,
+                baseURL: localBaseURL,
+                attachments: [],
+                instructions: instruction
+            )
+        }
+    }
+
     public static func cliAvailable(for provider: AIProvider) -> Bool {
         switch provider {
         case .claudeCLI: findExecutable(named: "claude") != nil

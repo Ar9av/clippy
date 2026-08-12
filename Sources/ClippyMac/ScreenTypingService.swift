@@ -42,6 +42,7 @@ final class ScreenTypingService {
     private var mouseMonitor: Any?
     private var activationMonitor: Any?
     private var lastExternalApplication: NSRunningApplication?
+    private var pinnedVoiceTarget: Target?
 
     private init() {}
 
@@ -84,6 +85,18 @@ final class ScreenTypingService {
 
     var targetDescription: String? {
         target?.appName
+    }
+
+    /// Snapshot the editable field under the active app when push-to-talk
+    /// begins. The user may change windows while the model is working; the
+    /// finished text should still return to the field where the request began.
+    func pinCurrentTargetForVoiceAction() {
+        captureFocusedElement()
+        pinnedVoiceTarget = target
+    }
+
+    func clearPinnedVoiceTarget() {
+        pinnedVoiceTarget = nil
     }
 
     var isAuthorized: Bool {
@@ -154,8 +167,18 @@ final class ScreenTypingService {
 
     @discardableResult
     func insert(_ text: String) async throws -> String {
-        try prepareForInsertion()
-        guard var target else { throw ScreenTypingError.noEditableTarget }
+        try await insert(text, targetOverride: nil)
+    }
+
+    @discardableResult
+    func insertIntoPinnedVoiceTarget(_ text: String) async throws -> String {
+        defer { pinnedVoiceTarget = nil }
+        return try await insert(text, targetOverride: pinnedVoiceTarget)
+    }
+
+    private func insert(_ text: String, targetOverride: Target?) async throws -> String {
+        if targetOverride == nil { try prepareForInsertion() }
+        guard var target = targetOverride ?? target else { throw ScreenTypingError.noEditableTarget }
 
         let role = stringAttribute(kAXRoleAttribute, from: target.element) ?? ""
         let subrole = stringAttribute(kAXSubroleAttribute, from: target.element) ?? ""

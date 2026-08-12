@@ -277,6 +277,12 @@ user's macOS Keychain.
   Settings ▸ Custom prompts — anything typed after the command is appended, so
   `/review this function` works as well as a bare `/review`. Typing `/` shows
   the matching commands above the composer.
+- **Custom voice actions.** Give any custom prompt its own push-to-talk
+  shortcut. Hold it in any editable field, speak the request, and Clippy uses a
+  lightweight, history-free model call to transform the transcript and insert
+  the result back into the same field. It never presses Return, so generated
+  shell commands remain reviewable before they run. A `/command` terminal
+  action is included by default on **⌥⌃Space**.
 - **An editable balloon menu.** The floating paperclip's options can be
   renamed, reordered, or hidden in Settings ▸ Balloon menu, and any custom
   prompt can be surfaced there as a one-click row. Each built-in row keeps its
@@ -298,8 +304,8 @@ user's macOS Keychain.
   hallucinating a "Thank you." into a pause. Local models come from
   [FluidAudio](https://github.com/FluidInference/FluidAudio) and
   [WhisperKit](https://github.com/argmaxinc/WhisperKit).
-- **Push-to-talk dictation — hold a chord to speak, release to stop.** Two
-  destinations:
+- **Push-to-talk dictation — hold a chord to speak, release to stop.** The
+  shortcuts are customizable in Settings, with two built-in destinations:
   - **Hold ⌘⌥** to type into whatever editable field you had focused. If
     there's nowhere safe to put it — no editable target, or a password
     field, which is always refused — it lands on your clipboard instead and

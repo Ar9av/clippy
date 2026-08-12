@@ -4,6 +4,7 @@ import Foundation
 
 @MainActor
 final class ChatViewModel: ObservableObject {
+    private static let terminalVoiceActionSeedKey = "didSeedTerminalVoiceAction.v1"
     @Published var messages: [ChatMessage] = []
     @Published var draft = ""
     @Published var isLoading = false
@@ -31,6 +32,7 @@ final class ChatViewModel: ObservableObject {
         didSet { ChatStore.savePendingPlan(pendingScreenPlan) }
     }
     @Published private(set) var isRunningScreenPlan = false
+    @Published private(set) var isRunningVoiceAction = false
     /// One status per step of `pendingScreenPlan`, so the banner shows the
     /// sequence advancing and where it stopped if something failed.
     @Published private(set) var screenPlanStatuses: [ScreenPlanStepStatus] = []
@@ -146,9 +148,21 @@ final class ChatViewModel: ObservableObject {
         character = ClippyCharacter.persisted
         alwaysAutoRunScreenPlans = UserDefaults.standard.object(forKey: "alwaysAutoRunScreenPlans") as? Bool ?? false
         showOnboarding = !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        let storedCustomPrompts: [CustomPrompt]
         if let data = UserDefaults.standard.data(forKey: "customPrompts"),
            let decoded = try? JSONDecoder().decode([CustomPrompt].self, from: data) {
-            customPrompts = decoded
+            storedCustomPrompts = decoded
+        } else {
+            storedCustomPrompts = []
+        }
+        if !UserDefaults.standard.bool(forKey: Self.terminalVoiceActionSeedKey) {
+            customPrompts = Self.promptsBySeedingTerminalAction(into: storedCustomPrompts)
+            if let data = try? JSONEncoder().encode(customPrompts) {
+                UserDefaults.standard.set(data, forKey: "customPrompts")
+            }
+            UserDefaults.standard.set(true, forKey: Self.terminalVoiceActionSeedKey)
+        } else {
+            customPrompts = storedCustomPrompts
         }
         if let data = UserDefaults.standard.data(forKey: "balloonActions"),
            let decoded = try? JSONDecoder().decode([BalloonAction].self, from: data) {
@@ -171,6 +185,17 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    nonisolated static func promptsBySeedingTerminalAction(into prompts: [CustomPrompt]) -> [CustomPrompt] {
+        guard !prompts.contains(where: \CustomPrompt.isShellCommandVoiceAction) else { return prompts }
+        var seeded = CustomPrompt.defaultTerminalAction
+        if prompts.contains(where: { $0.voiceShortcut == seeded.voiceShortcut }) {
+            // Keep every shortcut unique. The default action still appears,
+            // and Settings makes assigning a different chord one click away.
+            seeded.voiceShortcut = nil
+        }
+        return prompts + [seeded]
+    }
+
     var providerReady: Bool {
         if provider.needsAPIKey {
             return !(KeychainStore.read(account: provider.rawValue) ?? "").isEmpty
@@ -180,6 +205,51 @@ final class ChatViewModel: ObservableObject {
                 && !localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return AIService.cliAvailable(for: provider)
+    }
+
+    /// Runs a custom voice transformation without adding it to chat history.
+    /// Shell actions use stricter extraction so explanatory prose can never
+    /// leak into a terminal; general actions accept plain text or legacy JSON.
+    func runVoiceAction(_ action: CustomPrompt, transcript: String) async throws -> String {
+        let outputKey = action.voiceOutputKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isRunningVoiceAction else { throw VoiceActionError.alreadyRunning }
+        if action.isShellCommandVoiceAction,
+           let command = CustomPrompt.obviousShellCommand(from: transcript) {
+            activityMessage = "Voice action inserted — review it, then press Return when ready."
+            return command
+        }
+        isRunningVoiceAction = true
+        activityMessage = "Turning your voice request into text…"
+        defer { isRunningVoiceAction = false }
+        let request: String
+        if action.isShellCommandVoiceAction {
+            request = """
+            TASK (authoritative): \(action.prompt)
+            SPOKEN REQUEST: \(transcript)
+
+            Produce the executable shell command requested by the speaker. Use the TASK to correct obvious speech-recognition homophones, especially “get” or “good” when “git” makes sense. Treat polite phrases such as “can you” as a request to produce the command. Output only the command, with no prose or Markdown.
+            """
+        } else {
+            request = """
+            TASK (authoritative): \(action.prompt)
+            INPUT: \(transcript)
+            """
+        }
+        let response = try await AIService.fastTransform(
+            prompt: request,
+            provider: provider,
+            model: model,
+            apiKey: KeychainStore.read(account: provider.rawValue),
+            localBaseURL: localBaseURL
+        )
+        let extractionKey = outputKey.isEmpty ? "result" : outputKey
+        let output = if action.isShellCommandVoiceAction {
+            try CustomPrompt.extractedShellCommand(from: response, key: extractionKey)
+        } else {
+            try CustomPrompt.extractedVoiceValue(from: response, key: extractionKey)
+        }
+        activityMessage = "Voice action inserted — review it, then press Return when ready."
+        return output
     }
 
     /// Keep full chat light and immediately useful. Older history remains stored

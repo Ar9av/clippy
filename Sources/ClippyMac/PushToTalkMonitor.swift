@@ -21,7 +21,7 @@ enum DictationRoute: CaseIterable {
 /// A user-configurable push-to-talk key combination. `keyCode == nil` keeps
 /// the original modifier-only behaviour; otherwise the key must be held with
 /// exactly these modifiers.
-struct DictationShortcut: Codable, Equatable, Sendable {
+struct DictationShortcut: Codable, Equatable, Hashable, Sendable {
     var keyCode: UInt16?
     var modifiersRawValue: UInt
     /// The user-facing representation captured from AppKit. Key codes are an
@@ -120,6 +120,7 @@ final class PushToTalkMonitor {
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var armingTask: Task<Void, Never>?
+    private var armingRoute: DictationRoute?
     private var engagedRoute: DictationRoute?
     private var heldModifiers: NSEvent.ModifierFlags = []
 
@@ -191,6 +192,7 @@ final class PushToTalkMonitor {
     func stopMonitoring() {
         armingTask?.cancel()
         armingTask = nil
+        armingRoute = nil
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         if let eventTapSource {
@@ -225,8 +227,14 @@ final class PushToTalkMonitor {
             guard let held = route(for: heldModifiers, keyCode: event.keyCode) else {
                 armingTask?.cancel()
                 armingTask = nil
+                armingRoute = nil
                 cancelEngagedSession()
                 return
+            }
+            if let armingRoute, armingRoute != held {
+                armingTask?.cancel()
+                armingTask = nil
+                self.armingRoute = nil
             }
             guard engagedRoute == nil, armingTask == nil else { return }
             arm(held)
@@ -248,6 +256,15 @@ final class PushToTalkMonitor {
         // against the session-wide state so ⌘ followed by ⌥ resolves to ⌘⌥.
         let held = route(for: heldModifiers)
 
+        // If the user continues from one valid chord into another (for
+        // example ⌘, then ⌘⌥), restart the half-second hold for the final
+        // combination instead of leaving the first action armed.
+        if armingRoute != held {
+            armingTask?.cancel()
+            armingTask = nil
+            armingRoute = nil
+        }
+
         // Releasing a modifier-only chord — or switching to a different one —
         // ends the running session and delivers what it heard.
         if let engagedRoute, engagedRoute != held {
@@ -258,6 +275,7 @@ final class PushToTalkMonitor {
         guard let held, shortcut(for: held).keyCode == nil else {
             armingTask?.cancel()
             armingTask = nil
+            armingRoute = nil
             return
         }
 
@@ -268,10 +286,12 @@ final class PushToTalkMonitor {
     private func arm(_ held: DictationRoute) {
         Self.logger.debug("Push-to-talk chord detected; arming")
         armingTask?.cancel()
+        armingRoute = held
         armingTask = Task { [weak self] in
             try? await Task.sleep(for: Self.holdThreshold)
             guard !Task.isCancelled, let self else { return }
             self.armingTask = nil
+            self.armingRoute = nil
             guard self.route(for: self.heldModifiers, keyCode: self.shortcut(for: held).keyCode) == held,
                   self.engagedRoute == nil else { return }
             self.engagedRoute = held
