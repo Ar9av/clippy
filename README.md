@@ -69,8 +69,10 @@ classic assistant experience, minus the 90s bugs.
 4. Grant **Accessibility** and **Screen Recording** when asked. Without them Clippy still chats, it just can't see or act.
 
 Then pick how it thinks, in Settings: your existing **Claude Code** or
-**Codex** login (no extra key needed), or your own **OpenAI** / **Anthropic**
-API key, stored in the macOS Keychain.
+**Codex** login (no extra key needed), your own **OpenAI** / **Anthropic**
+API key (stored in the macOS Keychain), or a **Local Model** — any
+OpenAI-compatible server on your Mac, like [Ollama](https://ollama.com) or
+[LM Studio](https://lmstudio.ai). Nothing leaves your machine on that path.
 
 ## How it works
 

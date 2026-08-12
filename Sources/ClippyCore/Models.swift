@@ -5,6 +5,7 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
     case codexCLI
     case openAI
     case anthropic
+    case local
 
     public var id: String { rawValue }
 
@@ -14,6 +15,7 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
         case .codexCLI: "Codex"
         case .openAI: "OpenAI API"
         case .anthropic: "Anthropic API"
+        case .local: "Local Model"
         }
     }
 
@@ -23,6 +25,7 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
         case .codexCLI: "Codex"
         case .openAI: "OpenAI"
         case .anthropic: "Anthropic"
+        case .local: "your local model"
         }
     }
 
@@ -36,6 +39,8 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
             "Calls OpenAI directly with an API key stored in macOS Keychain."
         case .anthropic:
             "Calls Anthropic directly with an API key stored in macOS Keychain."
+        case .local:
+            "Calls an OpenAI-compatible local server — Ollama, LM Studio, or llama.cpp's server — running on your Mac. No API key, no data leaves your machine."
         }
     }
 
@@ -43,13 +48,27 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
         self == .openAI || self == .anthropic
     }
 
+    /// `.local` needs configuration too — a server URL and a model name —
+    /// just not a Keychain-stored API key. Kept distinct from `needsAPIKey`
+    /// so the Settings UI can show the right fields for each.
+    public var needsLocalServerConfig: Bool {
+        self == .local
+    }
+
     public var defaultModel: String {
         switch self {
         case .claudeCLI, .codexCLI: ""
         case .openAI: "gpt-4.1-mini"
         case .anthropic: "claude-sonnet-4-20250514"
+        case .local: ""
         }
     }
+
+    /// Default base URL offered for `.local` — Ollama's own OpenAI-compatible
+    /// endpoint, the most common local runner. LM Studio and llama.cpp's
+    /// `llama-server` both expose the same `/v1/chat/completions` shape on a
+    /// different default port, so this is a starting point, not a constant.
+    public static let defaultLocalBaseURL = "http://localhost:11434/v1"
 }
 
 public struct ChatMessage: Identifiable, Codable, Equatable {

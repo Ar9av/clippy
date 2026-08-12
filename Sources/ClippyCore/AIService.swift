@@ -434,7 +434,8 @@ public enum AIService {
         apiKey: String?,
         attachments: [URL] = [],
         presentation: ResponsePresentation,
-        context: String = ""
+        context: String = "",
+        localBaseURL: String = AIProvider.defaultLocalBaseURL
     ) async throws -> String {
         let instructions = instructions(for: presentation, context: context)
         let prompt = transcript(
@@ -469,6 +470,14 @@ public enum AIService {
                 attachments: attachments,
                 instructions: instructions
             )
+        case .local:
+            return try await callLocal(
+                messages: messages,
+                model: model,
+                baseURL: localBaseURL,
+                attachments: attachments,
+                instructions: instructions
+            )
         }
     }
 
@@ -476,7 +485,7 @@ public enum AIService {
         switch provider {
         case .claudeCLI: findExecutable(named: "claude") != nil
         case .codexCLI: findExecutable(named: "codex") != nil
-        case .openAI, .anthropic: true
+        case .openAI, .anthropic, .local: true
         }
     }
 
@@ -724,6 +733,82 @@ public enum AIService {
             throw ClippyError.invalidResponse("Anthropic returned an unfamiliar response.")
         }
         let text = content.compactMap { $0["text"] as? String }.joined()
+        guard !text.isEmpty else { throw ClippyError.emptyResponse }
+        return text
+    }
+
+    /// Talks to any OpenAI-compatible chat-completions server running on the
+    /// user's own machine — Ollama, LM Studio, and llama.cpp's `llama-server`
+    /// all expose this same shape, which is why one code path covers all
+    /// three rather than one client per runner. No API key: these servers
+    /// don't check for one, and asking the user to invent a value they'll
+    /// never use would just be friction.
+    private static func callLocal(
+        messages: [ChatMessage],
+        model: String,
+        baseURL: String,
+        attachments: [URL],
+        instructions: String
+    ) async throws -> String {
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClippyError.missingAPIKey("a local model name (set it in Settings, e.g. \"llama3.2\")")
+        }
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmedBase.isEmpty, let url = URL(string: "\(trimmedBase)/chat/completions") else {
+            throw ClippyError.invalidResponse("The local server URL in Settings isn't valid.")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let apiMessages = APIServiceMessages.from(messages)
+        var body: [[String: Any]] = [["role": "system", "content": instructions]]
+        body += apiMessages.enumerated().map { index, message in
+            let isLatestUser = index == apiMessages.count - 1 && message.role == .user
+            if isLatestUser && !attachments.isEmpty {
+                var content: [[String: Any]] = [
+                    ["type": "text", "text": message.content + textAttachmentContents(attachments)]
+                ]
+                for attachment in attachments where isImage(attachment) {
+                    if let dataURL = imageDataURL(attachment) {
+                        content.append(["type": "image_url", "image_url": ["url": dataURL]])
+                    }
+                }
+                return ["role": "user", "content": content]
+            }
+            return [
+                "role": message.role == .user ? "user" : "assistant",
+                "content": message.content
+            ]
+        }
+        let payload: [String: Any] = [
+            "model": model,
+            "messages": body,
+            "stream": false
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ClippyError.processFailed(
+                "Couldn't reach a local model server at \(trimmedBase). Make sure it's running (e.g. `ollama serve`) and the URL in Settings is correct."
+            )
+        }
+        try validate(response: response, data: data, provider: "The local model server")
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else {
+            throw ClippyError.invalidResponse(
+                "The local server returned an unfamiliar response. Check the model name and URL in Settings."
+            )
+        }
         guard !text.isEmpty else { throw ClippyError.emptyResponse }
         return text
     }

@@ -1914,6 +1914,24 @@ struct SettingsView: View {
                 }
             }
 
+            if viewModel.provider.needsLocalServerConfig {
+                GroupBox("Local server") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Point this at any OpenAI-compatible server running on your Mac — Ollama, LM Studio, or llama.cpp's llama-server. Nothing leaves your machine.")
+                            .font(RetroPalette.font(11))
+                            .foregroundStyle(RetroPalette.text)
+                        TextField("Server URL", text: $viewModel.localBaseURL)
+                            .autocorrectionDisabled()
+                        TextField("Model name (e.g. llama3.2, qwen2.5)", text: $viewModel.model)
+                            .autocorrectionDisabled()
+                        Text("The model must already be pulled/loaded in that server — Clippy doesn't download it for you.")
+                            .font(RetroPalette.font(11))
+                            .foregroundStyle(RetroPalette.disabledText)
+                    }
+                    .padding(8)
+                }
+            }
+
             GroupBox("Character") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Any of the classic Office assistants — same balloon, same brains, different sprite.")
@@ -1931,6 +1949,10 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if viewModel.provider.needsAPIKey {
                         TextField("Model", text: $viewModel.model)
+                    } else if viewModel.provider.needsLocalServerConfig {
+                        Text("Model and server URL are set above, under Local server.")
+                            .font(RetroPalette.font(11))
+                            .foregroundStyle(RetroPalette.text)
                     } else {
                         Text("The CLI’s configured default model will be used.")
                             .font(RetroPalette.font(11))

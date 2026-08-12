@@ -84,6 +84,12 @@ final class ChatViewModel: ObservableObject {
             UserDefaults.standard.set(model, forKey: "model.\(provider.rawValue)")
         }
     }
+    /// Base URL of the OpenAI-compatible local server used by `.local`
+    /// (Ollama, LM Studio, llama.cpp's `llama-server`). Persisted separately
+    /// from `model`, which is already keyed per-provider.
+    @Published var localBaseURL: String {
+        didSet { UserDefaults.standard.set(localBaseURL, forKey: "localBaseURL") }
+    }
     @Published var speakReplies: Bool {
         didSet { UserDefaults.standard.set(speakReplies, forKey: "speakReplies") }
     }
@@ -131,6 +137,8 @@ final class ChatViewModel: ObservableObject {
         provider = selected
         model = UserDefaults.standard.string(forKey: "model.\(selected.rawValue)")
             ?? selected.defaultModel
+        localBaseURL = UserDefaults.standard.string(forKey: "localBaseURL")
+            ?? AIProvider.defaultLocalBaseURL
         speakReplies = UserDefaults.standard.object(forKey: "speakReplies") as? Bool ?? true
         alwaysOnTop = UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? false
         // The sprite sheet is charming, but a resting paperclip is smoother by default.
@@ -166,6 +174,10 @@ final class ChatViewModel: ObservableObject {
     var providerReady: Bool {
         if provider.needsAPIKey {
             return !(KeychainStore.read(account: provider.rawValue) ?? "").isEmpty
+        }
+        if provider.needsLocalServerConfig {
+            return !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return AIService.cliAvailable(for: provider)
     }
@@ -318,6 +330,7 @@ final class ChatViewModel: ObservableObject {
         let conversationContext = Self.conversationContext(memories: memories)
         let selectedProvider = provider
         let selectedModel = model
+        let selectedLocalBaseURL = localBaseURL
         let key = KeychainStore.read(account: selectedProvider.rawValue)
         let shouldWriteToScreen = Self.requestsScreenTyping(history.last?.content ?? "")
             && !Self.requestsScreenPlan(history.last?.content ?? "")
@@ -439,7 +452,8 @@ final class ChatViewModel: ObservableObject {
                         apiKey: key,
                         attachments: effectiveAttachments,
                         presentation: presentation,
-                        context: conversationContext
+                        context: conversationContext,
+                        localBaseURL: selectedLocalBaseURL
                     )
                 }
 
@@ -472,7 +486,8 @@ final class ChatViewModel: ObservableObject {
                         apiKey: key,
                         attachments: effectiveAttachments,
                         presentation: presentation,
-                        context: conversationContext
+                        context: conversationContext,
+                        localBaseURL: selectedLocalBaseURL
                     )
                 }
                 // Strip any [[CLIPPY_REMEMBER:…]] before anything else looks
@@ -499,7 +514,8 @@ final class ChatViewModel: ObservableObject {
                         apiKey: key,
                         attachments: effectiveAttachments,
                         presentation: .screenReply,
-                        context: conversationContext
+                        context: conversationContext,
+                        localBaseURL: selectedLocalBaseURL
                     )
                     if AIService.asksForScreenAttachment(response) {
                         response = "I can’t find an open conversation on screen."
@@ -1461,7 +1477,8 @@ final class ChatViewModel: ObservableObject {
                 model: model,
                 apiKey: KeychainStore.read(account: provider.rawValue),
                 attachments: context.screenshotURLs + [context.contextURL],
-                presentation: .screenPlanStep
+                presentation: .screenPlanStep,
+                localBaseURL: localBaseURL
             )
         } catch {
             return .error(error.localizedDescription)
