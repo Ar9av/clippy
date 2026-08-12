@@ -37,6 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A shortcut capture can never survive an app launch. This is also a
+        // belt-and-braces reset for builds from before capture state became
+        // in-memory-only.
+        DictationShortcutCapture.isActive = false
+        UserDefaults.standard.removeObject(forKey: "isRecordingDictationShortcut")
         if yieldToRunningInstance() {
             NSApp.terminate(nil)
             return

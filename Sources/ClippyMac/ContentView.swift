@@ -641,6 +641,7 @@ struct ContentView: View {
     private func installPushToTalkMonitor() {
         guard pushToTalk == nil else { return }
         let monitor = PushToTalkMonitor(
+            shortcut: { DictationShortcutStore.get($0) },
             start: { route in
                 // Only the ⌘⌥ route aimed at another app bypasses the
                 // composer; dictating to Clippy (or to Clippy's own window)
@@ -673,6 +674,14 @@ struct ContentView: View {
                         // has not necessarily delivered yet.
                         applyDictationToDraft(dictated)
                         viewModel.send()
+                    } else {
+                        // The “other app” shortcut is often tested while
+                        // Clippy is frontmost. Dropping a perfectly valid
+                        // transcript in that case feels exactly like the mic
+                        // never ran, so keep it in Clippy's composer instead.
+                        setCompactBalloonVisible(true)
+                        compactInputActive = true
+                        applyDictationToDraft(dictated)
                     }
                 }
             },
@@ -1864,7 +1873,14 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var saveError: String?
     @State private var accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+    @State private var keyboardMonitoringEnabled = ScreenTypingService.shared.canMonitorKeyboard
     @State private var screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
+    @State private var dictationTestActive = false
+    @State private var focusedDictationShortcut = DictationShortcutStore.get(.focusedApp)
+    @State private var clippyDictationShortcut = DictationShortcutStore.get(.clippy)
+    @State private var recordingShortcut: DictationRoute?
+    @State private var shortcutCaptureMonitor: Any?
+    @State private var modifierCaptureTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2113,6 +2129,54 @@ struct SettingsView: View {
 
             GroupBox("Dictation") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("Push-to-talk shortcuts")
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
+                    shortcutRow("Dictate into another app", route: .focusedApp, shortcut: $focusedDictationShortcut)
+                    shortcutRow("Send voice message to \(viewModel.character.title)", route: .clippy, shortcut: $clippyDictationShortcut)
+                    HStack {
+                        Text("Click Record, then hold the desired key or combination for 0.5 seconds and release. Example: ⌘⌥ or ⌥Space.")
+                            .font(RetroPalette.font(10))
+                            .foregroundStyle(RetroPalette.disabledText)
+                        Spacer()
+                        Button("Reset defaults") { resetDictationShortcuts() }
+                            .font(RetroPalette.font(10))
+                    }
+                    Text("The first shortcut inserts text into the app you were using. If \(viewModel.character.title) is open, it puts the transcript in the chat box instead. The second sends a chat message when you release it.")
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
+                    HStack {
+                        Text(keyboardMonitoringEnabled ? "✓ Global shortcuts are enabled" : "! Global shortcuts need Input Monitoring permission")
+                            .font(RetroPalette.font(10))
+                            .foregroundStyle(keyboardMonitoringEnabled ? RetroPalette.text : RetroPalette.errorText)
+                        Spacer()
+                        if keyboardMonitoringEnabled {
+                            Button(dictationTestActive ? "Stop microphone" : "Test microphone") {
+                                Task {
+                                    if dictationTestActive {
+                                        _ = await speech.endPushToTalk()
+                                        dictationTestActive = false
+                                    } else {
+                                        await speech.beginPushToTalk()
+                                        dictationTestActive = speech.isListening
+                                    }
+                                }
+                            }
+                            .buttonStyle(RetroButtonStyle(minWidth: 100))
+                        } else {
+                            Button("Enable…") {
+                                ScreenTypingService.shared.requestKeyboardMonitoringPermission()
+                                ScreenTypingService.shared.openKeyboardMonitoringSettings()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    keyboardMonitoringEnabled = ScreenTypingService.shared.canMonitorKeyboard
+                                }
+                            }
+                            .buttonStyle(RetroButtonStyle(minWidth: 70))
+                        }
+                    }
+                    Text("Use Test microphone first. If it works but a shortcut does not, click Enable and allow \(viewModel.character.title) in System Settings → Privacy & Security → Input Monitoring. Reopen the app after granting it.")
+                        .font(RetroPalette.font(10))
+                        .foregroundStyle(RetroPalette.disabledText)
                     RetroRadioGroup(
                         options: DictationEngine.allCases.map { ($0, $0.displayName) },
                         selection: Binding(
@@ -2229,12 +2293,106 @@ struct SettingsView: View {
         .onAppear {
             apiKey = viewModel.currentAPIKey()
             accessibilityEnabled = ScreenTypingService.shared.isAuthorized
+            keyboardMonitoringEnabled = ScreenTypingService.shared.canMonitorKeyboard
             screenRecordingEnabled = ScreenAwarenessService.shared.canSeeScreen
+            focusedDictationShortcut = DictationShortcutStore.get(.focusedApp)
+            clippyDictationShortcut = DictationShortcutStore.get(.clippy)
         }
         .onChange(of: viewModel.provider) { _, _ in
             apiKey = viewModel.currentAPIKey()
             saveError = nil
         }
+        .onDisappear { stopShortcutCapture() }
+    }
+
+    @ViewBuilder
+    private func shortcutRow(_ title: String, route: DictationRoute, shortcut: Binding<DictationShortcut>) -> some View {
+        HStack {
+            Text(title)
+                .font(RetroPalette.font(11))
+            Spacer()
+            if recordingShortcut == route {
+                Text("Hold keys for 0.5s…")
+                    .font(RetroPalette.font(10))
+                    .foregroundStyle(RetroPalette.disabledText)
+                Button("Cancel") { stopShortcutCapture() }
+                    .buttonStyle(RetroButtonStyle(minWidth: 58))
+            } else {
+                Text(shortcut.wrappedValue.displayName)
+                    .font(RetroPalette.font(11))
+                Button("Record") { startShortcutCapture(for: route) }
+                    .buttonStyle(RetroButtonStyle(minWidth: 58))
+            }
+        }
+    }
+
+    private func startShortcutCapture(for route: DictationRoute) {
+        stopShortcutCapture()
+        recordingShortcut = route
+        DictationShortcutCapture.isActive = true
+        shortcutCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if event.type == .keyDown, event.keyCode == 53, modifiers.isEmpty {
+                stopShortcutCapture()
+                return nil
+            }
+            if event.type == .keyDown {
+                saveShortcut(
+                    DictationShortcut(
+                        keyCode: event.keyCode,
+                        modifiersRawValue: modifiers.rawValue,
+                        keyDisplay: event.charactersIgnoringModifiers?.uppercased()
+                    ),
+                    for: route
+                )
+                return nil
+            }
+            // Modifiers arrive one at a time. A short settle window lets
+            // ⌘ then ⌥ become one modifier-only shortcut instead of saving
+            // only the first key the user happened to press.
+            modifierCaptureTask?.cancel()
+            guard !modifiers.isEmpty else { return event }
+            modifierCaptureTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled,
+                      recordingShortcut == route,
+                      currentModifierFlags == modifiers
+                else { return }
+                saveShortcut(DictationShortcut(keyCode: nil, modifiersRawValue: modifiers.rawValue), for: route)
+            }
+            return event
+        }
+    }
+
+    private func saveShortcut(_ shortcut: DictationShortcut, for route: DictationRoute) {
+        if route == .focusedApp { focusedDictationShortcut = shortcut }
+        else { clippyDictationShortcut = shortcut }
+        DictationShortcutStore.set(shortcut, for: route)
+        stopShortcutCapture()
+    }
+
+    private func stopShortcutCapture() {
+        DictationShortcutCapture.isActive = false
+        modifierCaptureTask?.cancel()
+        modifierCaptureTask = nil
+        if let shortcutCaptureMonitor {
+            NSEvent.removeMonitor(shortcutCaptureMonitor)
+            self.shortcutCaptureMonitor = nil
+        }
+        recordingShortcut = nil
+    }
+
+    private var currentModifierFlags: NSEvent.ModifierFlags {
+        NSEvent.ModifierFlags(rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue))
+            .intersection(.deviceIndependentFlagsMask)
+    }
+
+    private func resetDictationShortcuts() {
+        stopShortcutCapture()
+        focusedDictationShortcut = .focusedAppDefault
+        clippyDictationShortcut = .clippyDefault
+        DictationShortcutStore.set(.focusedAppDefault, for: .focusedApp)
+        DictationShortcutStore.set(.clippyDefault, for: .clippy)
     }
 }
 

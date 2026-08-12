@@ -90,9 +90,28 @@ final class ScreenTypingService {
         AXIsProcessTrusted()
     }
 
+    /// Global push-to-talk needs permission to observe keyboard events from
+    /// other applications. This is a separate TCC permission from
+    /// Accessibility; checking only AX trust made Settings claim shortcuts
+    /// were enabled while macOS silently withheld every key event.
+    var canMonitorKeyboard: Bool {
+        CGPreflightListenEventAccess()
+    }
+
     func requestAccessibilityPermission() {
         _ = isAccessibilityTrusted(promptIfNeeded: true)
         _ = CGRequestPostEventAccess()
+    }
+
+    func requestKeyboardMonitoringPermission() {
+        _ = CGRequestListenEventAccess()
+    }
+
+    func openKeyboardMonitoringSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func openAccessibilitySettings() {
