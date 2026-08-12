@@ -41,8 +41,7 @@ let package = Package(
             ],
             path: "Sources/ClippyMac",
             resources: [
-                .copy("Resources/ClippySprites.png"),
-                .copy("Resources/ClippyAnimations.json")
+                .copy("Resources/Characters")
             ],
             linkerSettings: [
                 .linkedFramework("AVFoundation"),

@@ -400,7 +400,7 @@ final class ScreenAwarenessService {
             throw ScreenAwarenessError.unsafeAction(query)
         }
         try await waitForTarget(query)
-        _ = try highlight(matching: query, instruction: "Clippy is clicking \(query)")
+        _ = try highlight(matching: query, instruction: "\(ClippyCharacter.persisted.title) is clicking \(query)")
         try clickHighlighted()
         await settleScreen(within: .milliseconds(750))
     }
@@ -412,7 +412,7 @@ final class ScreenAwarenessService {
     /// this is the fallback for exactly that case, the same way a person
     /// would just click where they can see the control.
     func clickAtPoint(_ point: CGPoint, label: String) async throws {
-        try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is clicking \(label)")
+        try await guardedRawClick(at: point, label: label, highlightLabel: "\(ClippyCharacter.persisted.title) is clicking \(label)")
         await settleScreen(within: .milliseconds(750))
     }
 
@@ -435,7 +435,7 @@ final class ScreenAwarenessService {
         label: String,
         pressReturnAfter: Bool
     ) async throws {
-        try await guardedRawClick(at: point, label: label, highlightLabel: "Clippy is typing into \(label)")
+        try await guardedRawClick(at: point, label: label, highlightLabel: "\(ClippyCharacter.persisted.title) is typing into \(label)")
         // The monitor's capture is dispatched asynchronously, so poll for it
         // rather than guessing how long it takes.
         await waitUntil(timeout: .milliseconds(220)) {
@@ -791,7 +791,7 @@ final class ScreenAwarenessService {
                stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) == true {
                 highlightController.show(
                     around: resolved.summary.frame,
-                    label: "Text inserted — Clippy did not submit it"
+                    label: "Text inserted — \(ClippyCharacter.persisted.title) did not submit it"
                 )
                 return
             }
@@ -804,7 +804,7 @@ final class ScreenAwarenessService {
                stringAttribute(kAXValueAttribute, from: resolved.element)?.contains(text) == true {
                 highlightController.show(
                     around: resolved.summary.frame,
-                    label: "Text added at the end — Clippy did not submit it"
+                    label: "Text added at the end — \(ClippyCharacter.persisted.title) did not submit it"
                 )
                 return
             }
@@ -829,8 +829,8 @@ final class ScreenAwarenessService {
                         // Say which of the two actually happened. A field that
                         // had content and now doesn't was not "added" to.
                         label: existing.isEmpty || existing == text
-                            ? "Text added — Clippy did not submit it"
-                            : "Text replaced — Clippy did not submit it"
+                            ? "Text added — \(ClippyCharacter.persisted.title) did not submit it"
+                            : "Text replaced — \(ClippyCharacter.persisted.title) did not submit it"
                     )
                 }
                 return
@@ -861,7 +861,7 @@ final class ScreenAwarenessService {
         } else {
             highlightController.show(
                 around: resolved.summary.frame,
-                label: "Text added — Clippy did not submit it"
+                label: "Text added — \(ClippyCharacter.persisted.title) did not submit it"
             )
         }
     }

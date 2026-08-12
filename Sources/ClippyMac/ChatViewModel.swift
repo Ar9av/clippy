@@ -96,6 +96,13 @@ final class ChatViewModel: ObservableObject {
     @Published var animateClippy: Bool {
         didSet { UserDefaults.standard.set(animateClippy, forKey: "animateClippy") }
     }
+    /// Which classic Office-assistant sprite sheet to render. Read directly
+    /// off the same `"clippyCharacter"` key by `ClippyCharacter.persisted`
+    /// so a freshly created sprite controller picks the right one before
+    /// this view model is available via the environment.
+    @Published var character: ClippyCharacter {
+        didSet { UserDefaults.standard.set(character.rawValue, forKey: "clippyCharacter") }
+    }
     /// Off by default: a multi-step plan waits for the user to tap "Run
     /// plan" in the banner (or reply with an affirmative) instead of running
     /// unattended the moment it's parsed. A single-step open/navigate is
@@ -128,6 +135,7 @@ final class ChatViewModel: ObservableObject {
         alwaysOnTop = UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? false
         // The sprite sheet is charming, but a resting paperclip is smoother by default.
         animateClippy = UserDefaults.standard.object(forKey: "animateClippy") as? Bool ?? false
+        character = ClippyCharacter.persisted
         alwaysAutoRunScreenPlans = UserDefaults.standard.object(forKey: "alwaysAutoRunScreenPlans") as? Bool ?? false
         showOnboarding = !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         if let data = UserDefaults.standard.data(forKey: "customPrompts"),
@@ -149,7 +157,7 @@ final class ChatViewModel: ObservableObject {
             messages = [
                 ChatMessage(
                     role: .assistant,
-                    content: "Hi! I’m Clippy, now with a useful amount of intelligence. What can I help you with?"
+                    content: "Hi! I’m \(character.title), now with a useful amount of intelligence. What can I help you with?"
                 )
             ]
         }
@@ -289,7 +297,7 @@ final class ChatViewModel: ObservableObject {
         activityTask?.cancel()
         isLoading = false
         activityMessage = "Stopped. Your message is still here."
-        announce("Clippy stopped working on the request.")
+        announce("\(character.title) stopped working on the request.")
     }
 
     private func startRequest(
@@ -656,7 +664,7 @@ final class ChatViewModel: ObservableObject {
                 }
                 errorMessage = error.localizedDescription
                 activityMessage = "I hit a snag."
-                announce("Clippy could not complete the request. \(error.localizedDescription)")
+                announce("\(character.title) could not complete the request. \(error.localizedDescription)")
             }
             activityTask?.cancel()
             isLoading = false
@@ -1277,7 +1285,7 @@ final class ChatViewModel: ObservableObject {
                 errorMessage = lastFailureReason
                 screenStatus = "Stopped after \(consecutiveFailures) failed attempts in a row."
                 ScreenAwarenessService.shared.dismissHighlight()
-                announce("Clippy stopped after retrying \(consecutiveFailures) times. \(lastFailureReason ?? "")")
+                announce("\(character.title) stopped after retrying \(consecutiveFailures) times. \(lastFailureReason ?? "")")
                 finishActivity(message: "I tried a few approaches and got stuck — check the step I flagged.")
                 postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stuck after repeated failures")
                 pendingScreenPlan?.hasExecuted = true
@@ -1336,12 +1344,12 @@ final class ChatViewModel: ObservableObject {
             // is now paused with no next step.
             errorMessage = loopError
             screenStatus = "Stopped — I couldn't check what happened next."
-            announce("Clippy stopped. \(loopError)")
+            announce("\(character.title) stopped. \(loopError)")
             finishActivity(message: "Something interrupted me while checking the next step — check what ran so far.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — couldn't confirm the next step (\(loopError))")
         } else if stalledOnRepeat {
             screenStatus = "Stopped — kept proposing the same step without progress."
-            announce("Clippy stopped. It kept proposing the same step without anything changing.")
+            announce("\(character.title) stopped. It kept proposing the same step without anything changing.")
             finishActivity(message: "I got stuck repeating the same step — check what happened and try again.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — repeated the same step without progress")
         } else if executedStatuses.last == .failed {
@@ -1351,7 +1359,7 @@ final class ChatViewModel: ObservableObject {
             // visible so the user can see exactly where it gave up.
             errorMessage = lastFailureReason
             screenStatus = "Stopped — couldn't find a safe way to continue."
-            announce("Clippy stopped. \(lastFailureReason ?? "It couldn't find a safe way to continue.")")
+            announce("\(character.title) stopped. \(lastFailureReason ?? "It couldn't find a safe way to continue.")")
             finishActivity(message: "I got stuck and couldn't finish — check the step I flagged.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — couldn't find a safe way to continue")
         } else if let modelStopReason {
@@ -1368,7 +1376,7 @@ final class ChatViewModel: ObservableObject {
             // Hit the step cap with a next step still queued — the task was
             // truncated, not completed. Never claim success here.
             screenStatus = "Reached the \(ScreenPlanRunner.stepLimit)-step limit before finishing."
-            announce("Clippy reached its step limit before finishing.")
+            announce("\(character.title) reached its step limit before finishing.")
             finishActivity(message: "I hit my \(ScreenPlanRunner.stepLimit)-step limit before finishing — here's where I got to.")
             postStepHistory(executedSteps, statuses: executedStatuses, goal: summary, outcomeNote: "stopped — reached the step limit before finishing")
         } else {

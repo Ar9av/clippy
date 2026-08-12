@@ -361,7 +361,7 @@ struct ClippyMacApp: App {
                 .keyboardShortcut("n")
             }
             CommandGroup(after: .appSettings) {
-                Button("Clippy Settings…") {
+                Button("\(viewModel.character.title) Settings…") {
                     viewModel.showSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)

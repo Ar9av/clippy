@@ -161,7 +161,7 @@ struct ContentView: View {
             pushToTalk = nil
         }
         .alert(
-            "Clippy needs permission",
+            "\(viewModel.character.title) needs permission",
             isPresented: Binding(
                 get: { speech.authorizationError != nil },
                 set: { if !$0 { speech.authorizationError = nil } }
@@ -608,7 +608,7 @@ struct ContentView: View {
 
     private func chooseAttachments() {
         let panel = NSOpenPanel()
-        panel.title = "Attach to Clippy"
+        panel.title = "Attach to \(viewModel.character.title)"
         panel.prompt = "Attach"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -792,7 +792,7 @@ struct ContentView: View {
         if let last = viewModel.messages.last, last.role == .assistant {
             return ResponsePresentation.compactText(last.content)
         }
-        return "Hi! I am Clippy, your desktop assistant. Would you like some assistance today?"
+        return "Hi! I am \(viewModel.character.title), your desktop assistant. Would you like some assistance today?"
     }
 
     /// Title bar plus toolbar, in that order — the arrangement every window of
@@ -801,7 +801,7 @@ struct ContentView: View {
     private var header: some View {
         VStack(spacing: 0) {
             RetroTitleBar(
-                title: "Clippy",
+                title: viewModel.character.title,
                 // Minimising a chat window that lives as a desktop character
                 // means going back to being the character — not vanishing into
                 // the Dock, which is where the user would then have to hunt
@@ -1142,7 +1142,7 @@ struct ContentView: View {
             Image(systemName: "cursorarrow.click.2")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Clippy found “\(action.label)”")
+                Text("\(viewModel.character.title) found “\(action.label)”")
                     .font(.caption.weight(.semibold))
                 Text(action.detail)
                     .font(.caption2)
@@ -1230,7 +1230,7 @@ struct ContentView: View {
             }
 
             HStack {
-                Text("Clippy will stop before Send, Submit, payment, deletion, or password controls.")
+                Text("\(viewModel.character.title) will stop before Send, Submit, payment, deletion, or password controls.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1370,7 +1370,7 @@ struct ContentView: View {
                 .disabled(viewModel.isLoading)
                 .help("Paste an image or file")
 
-                TextField("Ask Clippy anything…", text: $viewModel.draft, axis: .vertical)
+                TextField("Ask \(viewModel.character.title) anything…", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .font(RetroPalette.font(12))
@@ -1413,7 +1413,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(RetroButtonStyle(minWidth: 24))
                     .listeningPulse(isActive: speech.isListening)
-                    .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌥⇧ to ask Clippy")
+                    .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌥⇧ to ask \(viewModel.character.title)")
                     .animation(.easeOut(duration: 0.16), value: speech.isListening)
                 }
 
@@ -1914,6 +1914,19 @@ struct SettingsView: View {
                 }
             }
 
+            GroupBox("Character") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Any of the classic Office assistants — same balloon, same brains, different sprite.")
+                        .font(RetroPalette.font(11))
+                        .foregroundStyle(RetroPalette.text)
+                    RetroRadioGroup(
+                        options: ClippyCharacter.allCases.map { ($0, $0.title) },
+                        selection: $viewModel.character
+                    )
+                }
+                .padding(8)
+            }
+
             GroupBox("Model and behavior") {
                 VStack(alignment: .leading, spacing: 12) {
                     if viewModel.provider.needsAPIKey {
@@ -1924,8 +1937,8 @@ struct SettingsView: View {
                             .foregroundStyle(RetroPalette.text)
                     }
                     Toggle("Read replies aloud", isOn: $viewModel.speakReplies)
-                    Toggle("Keep Clippy above other windows", isOn: $viewModel.alwaysOnTop)
-                    Toggle("Animate Clippy", isOn: $viewModel.animateClippy)
+                    Toggle("Keep \(viewModel.character.title) above other windows", isOn: $viewModel.alwaysOnTop)
+                    Toggle("Animate \(viewModel.character.title)", isOn: $viewModel.animateClippy)
                     Text("Off keeps the paperclip still and reduces visual motion.")
                         .font(RetroPalette.font(11))
                         .foregroundStyle(RetroPalette.text)
@@ -1940,7 +1953,7 @@ struct SettingsView: View {
             // Memory the user can't see is memory they can't correct, so
             // every stored fact is listed verbatim and individually
             // removable rather than hidden behind a single on/off switch.
-            GroupBox("What Clippy remembers") {
+            GroupBox("What \(viewModel.character.title) remembers") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Durable facts picked up from your conversations, kept across chats so you don’t have to repeat yourself. Delete anything that’s wrong or that you’d rather it didn’t know.")
                         .font(RetroPalette.font(11))
@@ -2042,7 +2055,7 @@ struct SettingsView: View {
                                     ))
                                             .frame(width: 130)
                                 }
-                                TextField("What should Clippy do?", text: $prompt.prompt, axis: .vertical)
+                                TextField("What should \(viewModel.character.title) do?", text: $prompt.prompt, axis: .vertical)
                                             .lineLimit(1...4)
                                 Toggle("Show in balloon menu", isOn: $prompt.showsInBalloon)
                                     .font(RetroPalette.font(11))
@@ -2110,7 +2123,7 @@ struct SettingsView: View {
 
             GroupBox("Write in other apps") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Clippy can insert generated text into the last editable field you focused. It never types into secure fields or presses Send.")
+                    Text("\(viewModel.character.title) can insert generated text into the last editable field you focused. It never types into secure fields or presses Send.")
                         .font(RetroPalette.font(11))
                         .foregroundStyle(RetroPalette.text)
                     HStack {
@@ -2141,7 +2154,7 @@ struct SettingsView: View {
 
             GroupBox("See and guide on screen") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("With Screen Recording and Accessibility, Clippy can inspect the current app, highlight controls, and prepare clicks. Every click still requires your confirmation.")
+                    Text("With Screen Recording and Accessibility, \(viewModel.character.title) can inspect the current app, highlight controls, and prepare clicks. Every click still requires your confirmation.")
                         .font(RetroPalette.font(11))
                         .foregroundStyle(RetroPalette.text)
                     HStack {
@@ -2190,7 +2203,7 @@ struct SettingsView: View {
         .padding(14)
         .retroDialog()
         .frame(width: 560, height: 680)
-        .retroWindow(title: "Clippy Settings") { dismiss() }
+        .retroWindow(title: "\(viewModel.character.title) Settings") { dismiss() }
         .onAppear {
             apiKey = viewModel.currentAPIKey()
             accessibilityEnabled = ScreenTypingService.shared.isAuthorized

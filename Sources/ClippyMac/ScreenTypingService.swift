@@ -12,11 +12,11 @@ enum ScreenTypingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermission:
-            "Allow Clippy in System Settings → Privacy & Security → Accessibility, then click your destination field and ask again."
+            "Allow \(ClippyCharacter.persisted.title) in System Settings → Privacy & Security → Accessibility, then click your destination field and ask again."
         case .noEditableTarget:
-            "Click the text box where you want this written, then open Clippy and ask again."
+            "Click the text box where you want this written, then open \(ClippyCharacter.persisted.title) and ask again."
         case .secureField:
-            "Clippy won’t type into password or other secure fields."
+            "\(ClippyCharacter.persisted.title) won’t type into password or other secure fields."
         case .unsupportedField:
             "That app does not expose this text box to macOS Accessibility. Try a standard text field."
         }

@@ -33,8 +33,7 @@ mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_ROOT" "$ICONSET_D
 
 cp "$UNIVERSAL_BIN" "$CONTENTS_DIR/MacOS/Clippy"
 cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
-cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippySprites.png" "$CONTENTS_DIR/Resources/ClippySprites.png"
-cp "$PROJECT_DIR/Sources/ClippyMac/Resources/ClippyAnimations.json" "$CONTENTS_DIR/Resources/ClippyAnimations.json"
+cp -R "$PROJECT_DIR/Sources/ClippyMac/Resources/Characters" "$CONTENTS_DIR/Resources/Characters"
 
 # The Prismor policy that defines every on-screen refusal. Clippy fails closed
 # without it — a shipped app missing this file would refuse every screen

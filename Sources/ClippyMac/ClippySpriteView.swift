@@ -2,6 +2,37 @@ import AppKit
 import ImageIO
 import SwiftUI
 
+/// One of the classic Office-assistant sprite sheets, all sharing the same
+/// frame-atlas JSON schema so `ClippyAnimationController` needs no per-agent
+/// special-casing beyond the resource name.
+enum ClippyCharacter: String, CaseIterable, Codable {
+    case clippy, bonzi, merlin, links, peedy, rocky, rover, genie, genius, f1
+
+    var title: String {
+        switch self {
+        case .clippy: "Clippy"
+        case .bonzi: "Bonzi"
+        case .merlin: "Merlin"
+        case .links: "Links"
+        case .peedy: "Peedy"
+        case .rocky: "Rocky"
+        case .rover: "Rover"
+        case .genie: "Genie"
+        case .genius: "Genius"
+        case .f1: "F1"
+        }
+    }
+
+    /// Read directly from `UserDefaults` (rather than threading the value
+    /// down from `ChatViewModel`) so a `@StateObject` controller can pick the
+    /// right character on its very first load, before the environment object
+    /// is available to a SwiftUI view's `init`. `ChatViewModel` writes to the
+    /// same `"clippyCharacter"` key when the user changes it in Settings.
+    static var persisted: ClippyCharacter {
+        ClippyCharacter(rawValue: UserDefaults.standard.string(forKey: "clippyCharacter") ?? "") ?? .clippy
+    }
+}
+
 enum ClippyMood: Equatable {
     case idle
     case greeting
@@ -55,8 +86,10 @@ final class ClippyAnimationController: ObservableObject {
     private var data: AgentAnimationData?
     private var playbackTask: Task<Void, Never>?
     private var mood: ClippyMood = .idle
+    private(set) var character: ClippyCharacter
 
-    init() {
+    init(character: ClippyCharacter = .clippy) {
+        self.character = character
         loadAssets()
     }
 
@@ -74,31 +107,43 @@ final class ClippyAnimationController: ObservableObject {
         play(newMood)
     }
 
-    /// Decoding the 213 KB animation JSON and the 1.3 MB sprite sheet is
-    /// identical work for every instance — `ClippyPortrait` alone creates
-    /// one `ClippyAnimationController` per message bubble, so a 40-message
-    /// transcript used to repeat this decode 20+ times. Cached once per
-    /// process instead.
-    private static var cachedAssets: (data: AgentAnimationData, sheet: CGImage)?
+    /// Swaps the sprite sheet/atlas and replays a greeting on the new
+    /// character, mirroring `start()`. A no-op when the character hasn't
+    /// actually changed, so re-selecting the same one in settings doesn't
+    /// interrupt whatever's currently playing.
+    func setCharacter(_ newCharacter: ClippyCharacter) {
+        guard newCharacter != character else { return }
+        character = newCharacter
+        loadAssets()
+        play(.greeting, returnTo: mood)
+    }
 
-    /// The packaged .app (built via scripts/build-dmg.sh) copies these files
-    /// directly into Contents/Resources, so `Bundle.main` finds them there.
-    /// A plain `swift build`/`swift run` has no .app bundle at all — for
-    /// that case SwiftPM generates a resource bundle for this target
-    /// (`Bundle.module`), so fall back to it rather than silently rendering
-    /// no sprite.
+    /// Decoding a ~200 KB animation JSON and a multi-MB sprite sheet is
+    /// identical work for every instance of the same character —
+    /// `ClippyPortrait` alone creates one `ClippyAnimationController` per
+    /// message bubble, so a 40-message transcript used to repeat this decode
+    /// 20+ times. Cached once per process, per character.
+    private static var cachedAssets: [ClippyCharacter: (data: AgentAnimationData, sheet: CGImage)] = [:]
+
+    /// The packaged .app (built via scripts/build-dmg.sh) copies the
+    /// `Characters` directory directly into Contents/Resources, so
+    /// `Bundle.main` finds it there. A plain `swift build`/`swift run` has no
+    /// .app bundle at all — for that case SwiftPM generates a resource
+    /// bundle for this target (`Bundle.module`), so fall back to it rather
+    /// than silently rendering no sprite.
     private func loadAssets() {
         let decoded: AgentAnimationData
         let image: CGImage
-        if let cached = Self.cachedAssets {
+        if let cached = Self.cachedAssets[character] {
             decoded = cached.data
             image = cached.sheet
         } else {
+            let name = character.rawValue
             guard
-                let jsonURL = Bundle.main.url(forResource: "ClippyAnimations", withExtension: "json")
-                    ?? Bundle.module.url(forResource: "ClippyAnimations", withExtension: "json"),
-                let spriteURL = Bundle.main.url(forResource: "ClippySprites", withExtension: "png")
-                    ?? Bundle.module.url(forResource: "ClippySprites", withExtension: "png"),
+                let jsonURL = Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "Characters")
+                    ?? Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Characters"),
+                let spriteURL = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Characters")
+                    ?? Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Characters"),
                 let json = try? Data(contentsOf: jsonURL),
                 let loadedData = try? JSONDecoder().decode(AgentAnimationData.self, from: json),
                 let source = CGImageSourceCreateWithURL(spriteURL as CFURL, nil),
@@ -108,7 +153,7 @@ final class ClippyAnimationController: ObservableObject {
             }
             decoded = loadedData
             image = loadedImage
-            Self.cachedAssets = (decoded, image)
+            Self.cachedAssets[character] = (decoded, image)
         }
 
         data = decoded
@@ -182,7 +227,8 @@ struct AnimatedClippyView: View {
     let mood: ClippyMood
     var showsStatus = false
 
-    @StateObject private var controller = ClippyAnimationController()
+    @EnvironmentObject private var viewModel: ChatViewModel
+    @StateObject private var controller = ClippyAnimationController(character: .persisted)
 
     var body: some View {
         VStack(spacing: 4) {
@@ -198,7 +244,7 @@ struct AnimatedClippyView: View {
                         .scaledToFit()
                 }
             }
-            .accessibilityLabel("Animated Clippy")
+            .accessibilityLabel("Animated \(controller.character.title)")
 
             if showsStatus {
                 Text(controller.currentAnimation)
@@ -211,6 +257,9 @@ struct AnimatedClippyView: View {
         .onChange(of: mood) { _, newMood in
             controller.setMood(newMood)
         }
+        .onChange(of: viewModel.character) { _, newCharacter in
+            controller.setCharacter(newCharacter)
+        }
     }
 }
 
@@ -222,7 +271,8 @@ struct ClippyPortrait: View {
 }
 
 struct StaticClippyView: View {
-    @StateObject private var controller = ClippyAnimationController()
+    @EnvironmentObject private var viewModel: ChatViewModel
+    @StateObject private var controller = ClippyAnimationController(character: .persisted)
 
     var body: some View {
         Group {
@@ -237,6 +287,9 @@ struct StaticClippyView: View {
                     .scaledToFit()
             }
         }
-        .accessibilityLabel("Clippy")
+        .accessibilityLabel(controller.character.title)
+        .onChange(of: viewModel.character) { _, newCharacter in
+            controller.setCharacter(newCharacter)
+        }
     }
 }
