@@ -52,6 +52,7 @@ classic assistant experience, minus the 90s bugs.
 | *"what does this error mean?"* | Reads the error off your screen and explains it. No copy-paste. |
 | *"reply to this"* | Reads the visible conversation, drafts a reply into the box — **never sends it**. |
 | *"put that in the prompt box"* | Types the thing you just discussed into the field you meant. |
+| *(hold ⌥⌃Space) "pull the latest git changes"* | Inserts `git pull` into the terminal for you to review — it does not run it. |
 | *"summarise this page"* | Scrolls, reads, answers in the balloon. |
 | *"write a haiku about paperclips"* | Just answers — no screenshot taken, streams in instantly. |
 
@@ -66,7 +67,7 @@ classic assistant experience, minus the 90s bugs.
 1. **[Download the latest DMG](https://github.com/Ar9av/clippy/releases/latest)** — one universal build, Apple Silicon and Intel.
 2. Open it, drag Clippy to Applications.
 3. First launch: right-click ▸ **Open** (the build is ad-hoc signed, so Gatekeeper warns once).
-4. Grant **Accessibility** and **Screen Recording** when asked. Without them Clippy still chats, it just can't see or act.
+4. Grant **Accessibility**, **Screen Recording**, **Microphone**, and **Input Monitoring** when asked. Without them Clippy still chats, but it cannot see the screen, insert text, or hear global push-to-talk shortcuts.
 
 Then pick how it thinks, in Settings: your existing **Claude Code** or
 **Codex** login (no extra key needed), your own **OpenAI** / **Anthropic**
@@ -248,7 +249,7 @@ lost either architecture slice.
 Run the checks yourself with:
 
 ```bash
-swift test                    # 280 unit tests
+swift test                    # 340 unit tests
 swift run clippy-eval --offline   # replays recorded screens; safety regression gate
 ```
 
@@ -326,6 +327,52 @@ user's macOS Keychain.
 - Compact-balloon attachments for images, PDFs, and text/code files: paste images or file URLs directly with Command-V
 - Persistent conversation history
 - Optional always-on-top window
+
+## Voice actions and keyboard shortcuts
+
+Voice actions turn one custom prompt into a hold-to-talk tool that works from
+another app. Clippy remembers the editable field that was focused when the
+shortcut began, transcribes the recording after release, runs a small
+history-free model request, and inserts the finished text back into that same
+field. Changing windows while it processes does not redirect the result.
+
+Clippy includes this action on first launch and adds it once when upgrading an
+existing installation:
+
+| Action | Default shortcut | Prompt | Result |
+| --- | --- | --- | --- |
+| `/command` | **⌥⌃Space** | Convert the spoken request into one safe executable shell command. | Command text inserted at the terminal cursor. |
+
+Try it by focusing a Terminal prompt, holding **⌥⌃Space** for half a second,
+saying “pull the latest git changes,” and releasing the keys. The expected
+insertion is `git pull`. Common speech-recognition variants such as “get pull”
+and “good pull” are corrected in terminal context.
+
+To create another action:
+
+1. Open **Settings ▸ Custom prompts** and select **Add prompt**.
+2. Give it a slash-command name and the transformation prompt—for example,
+   `reply` and “Rewrite the spoken text as a concise, friendly reply.”
+3. Select **Record**, hold the desired key or combination for half a second,
+   then release it. Clippy refuses combinations already assigned elsewhere.
+4. Focus an editable field in any app, hold the new shortcut, speak, and
+   release to insert the transformed result.
+
+The two built-in dictation routes are customizable in **Settings ▸ Dictation**:
+
+- **⌘⌥** transcribes directly into the focused app.
+- **⌥⇧** sends the transcript to Clippy as a chat message.
+
+All three shortcut types work globally when Input Monitoring is enabled and
+fall back to Clippy-only handling without it. A shortcut must be held for half
+a second before recording begins, preventing ordinary modifier combinations
+from opening the microphone accidentally.
+
+Generated terminal commands are treated more strictly than general text:
+Clippy requests command-only output, extracts commands from fenced or verbose
+model responses, and inserts nothing if it cannot identify a usable command.
+It never presses Return, never types into a secure field, and never executes
+the generated command for you.
 
 ## Contributing
 
