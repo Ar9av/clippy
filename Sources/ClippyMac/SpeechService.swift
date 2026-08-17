@@ -142,11 +142,20 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     /// path notice it was superseded and shut itself down.
     private var pushToTalkGeneration = 0
 
+    /// Whether the current hold's transcript has already been handed to a
+    /// caller. `transcript` outlives the session it came from, so a second
+    /// `endPushToTalk()` for the same hold — a repeated release edge, or a
+    /// release racing the stop that a chord change already triggered — used to
+    /// return that same text again and have it typed into the target field a
+    /// second time.
+    private var pushToTalkTranscriptConsumed = true
+
     /// Begin a hold-to-talk session. Does nothing if dictation is already
     /// running, so holding the chord mid-session can't restart it and discard
     /// the transcript so far.
     func beginPushToTalk() async {
         guard !isListening else { return }
+        pushToTalkTranscriptConsumed = false
         pushToTalkGeneration &+= 1
         let generation = pushToTalkGeneration
         await startListening()
@@ -158,6 +167,11 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     /// End a hold-to-talk session and return what was heard.
     @discardableResult
     func endPushToTalk() async -> String {
+        guard !pushToTalkTranscriptConsumed else { return "" }
+        // Claimed before the await, not after: transcription on the batch
+        // engines takes long enough for a second release edge to arrive
+        // mid-flight and be handed the same audio's transcript.
+        pushToTalkTranscriptConsumed = true
         pushToTalkGeneration &+= 1
         await finishListening()
         return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -169,6 +183,7 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     /// a batch engine, transcribing a cancelled hold would land the text in
     /// the composer a second or two after the user had moved on.
     func cancelPushToTalk() {
+        pushToTalkTranscriptConsumed = true
         pushToTalkGeneration &+= 1
         stopListening()
         transcript = ""

@@ -86,6 +86,16 @@ final class ClippyAnimationController: ObservableObject {
     private var data: AgentAnimationData?
     private var playbackTask: Task<Void, Never>?
     private var mood: ClippyMood = .idle
+    /// Bumped by every `play(_:returnTo:)`. A cancelled playback task can still
+    /// run a few lines past its last cancellation check — cancelling during the
+    /// final frame's sleep lets it fall out of the frame loop and write
+    /// `self.mood = returnTo`, clobbering the mood the *new* task is playing.
+    /// `setMood` then sees the mood it was asked for already recorded and
+    /// returns early, so the sprite stayed stuck on the superseded animation
+    /// (most visibly: Clippy kept the listening headphones on long after
+    /// dictation ended). Stale tasks compare generations before touching any
+    /// shared state.
+    private var playbackGeneration = 0
     private(set) var character: ClippyCharacter
 
     init(character: ClippyCharacter = .clippy) {
@@ -165,6 +175,8 @@ final class ClippyAnimationController: ObservableObject {
 
     private func play(_ requestedMood: ClippyMood, returnTo: ClippyMood? = nil) {
         playbackTask?.cancel()
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
         mood = requestedMood
 
         playbackTask = Task { [weak self] in
@@ -172,11 +184,12 @@ final class ClippyAnimationController: ObservableObject {
             var activeMood = requestedMood
 
             while !Task.isCancelled {
+                guard generation == self.playbackGeneration else { return }
                 guard let animation = self.pickAnimation(for: activeMood) else { return }
                 self.currentAnimation = animation.name
 
                 for frame in animation.value.frames {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, generation == self.playbackGeneration else { return }
                     self.render(frame)
                     let milliseconds = max(frame.duration, 16)
                     try? await Task.sleep(for: .milliseconds(milliseconds))
@@ -190,6 +203,7 @@ final class ClippyAnimationController: ObservableObject {
                 }
 
                 if let returnTo {
+                    guard generation == self.playbackGeneration else { return }
                     activeMood = returnTo
                     self.mood = returnTo
                 }

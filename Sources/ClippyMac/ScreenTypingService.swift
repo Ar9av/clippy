@@ -207,8 +207,36 @@ final class ScreenTypingService {
             )
         }
 
+        // Snapshotted once, before any write, so every escalation below can ask
+        // the same question — "is the text already in the field?" — against the
+        // same baseline, rather than trusting only its own strategy's
+        // exact-match check.
         let valueBeforeInsertion = stringAttribute(kAXValueAttribute, from: target.element)
-        if isSettable(kAXValueAttribute as CFString, on: target.element),
+        let rangeBeforeInsertion = rangeAttribute(
+            kAXSelectedTextRangeAttribute,
+            from: target.element
+        )
+        func textAlreadyLanded() -> Bool {
+            let verificationElement = focusedEditableElement(
+                for: target.processIdentifier
+            ) ?? target.element
+            return insertionSucceeded(
+                text: text,
+                valueBefore: valueBeforeInsertion,
+                rangeBefore: rangeBeforeInsertion,
+                in: verificationElement
+            )
+        }
+
+        // An Accessibility write whose result can't be checked is a coin flip
+        // that duplicates the text when it comes up wrong: the write lands,
+        // the check can't see it, and the keyboard fallback types it again. On
+        // those elements go straight to the single keyboard route below, which
+        // is also the one Chromium and Electron editors actually honour.
+        let canVerify = canVerifyInsertion(valueBefore: valueBeforeInsertion, in: target.element)
+
+        if canVerify,
+           isSettable(kAXValueAttribute as CFString, on: target.element),
            let currentValue = valueBeforeInsertion {
             let nsValue = currentValue as NSString
             let reportedRange = rangeAttribute(
@@ -251,6 +279,11 @@ final class ScreenTypingService {
             }
         }
 
+        // The AXValue write may well have landed even though its exact-match
+        // verification above disagreed. Escalating in that case is what types
+        // the text a second and third time, so re-read the field first.
+        if textAlreadyLanded() { return target.appName }
+
         // Some custom editors expose only selected-text replacement. Try it
         // after the standard AXValue route, since AppKit text views can
         // invalidate their accessibility node after a selected-text write.
@@ -264,7 +297,8 @@ final class ScreenTypingService {
             )
         }
         let selectedTextAttribute = kAXSelectedTextAttribute as CFString
-        if valueBeforeInsertion != nil,
+        if canVerify,
+           valueBeforeInsertion != nil,
            isSettable(selectedTextAttribute, on: target.element) {
             let currentRange = rangeAttribute(
                 kAXSelectedTextRangeAttribute,
@@ -289,6 +323,10 @@ final class ScreenTypingService {
                 }
             }
         }
+
+        // Same guard again before the keyboard route, which is the one that can
+        // append a visible duplicate rather than replacing a selection.
+        if textAlreadyLanded() { return target.appName }
 
         try await typeWithKeyboard(text, into: target)
         return target.appName
@@ -549,12 +587,14 @@ final class ScreenTypingService {
             let verificationElement = focusedEditableElement(
                 for: target.processIdentifier
             ) ?? target.element
-            if insertionSucceeded(
+            let succeeded = insertionSucceeded(
                 text: text,
                 valueBefore: valueBeforeInsertion,
                 rangeBefore: rangeBeforeInsertion,
                 in: verificationElement
-            ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement) {
+            )
+            let verifiable = canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement)
+            if succeeded || !verifiable {
                 return
             }
             pasteboard.clearContents()
@@ -567,12 +607,14 @@ final class ScreenTypingService {
             let verificationElement = focusedEditableElement(
                 for: target.processIdentifier
             ) ?? target.element
-            if insertionSucceeded(
+            let succeeded = insertionSucceeded(
                 text: text,
                 valueBefore: valueBeforeInsertion,
                 rangeBefore: rangeBeforeInsertion,
                 in: verificationElement
-            ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement) {
+            )
+            let verifiable = canVerifyInsertion(valueBefore: valueBeforeInsertion, in: verificationElement)
+            if succeeded || !verifiable {
                 return
             }
             pasteboard.clearContents()
@@ -600,12 +642,14 @@ final class ScreenTypingService {
         try await Task.sleep(for: .milliseconds(180))
         restorePasteboard(snapshot, to: pasteboard)
 
-        if insertionSucceeded(
+        let pasteSucceeded = insertionSucceeded(
             text: text,
             valueBefore: valueBeforeInsertion,
             rangeBefore: rangeBeforeInsertion,
             in: target.element
-        ) || !canVerifyInsertion(valueBefore: valueBeforeInsertion, in: target.element) {
+        )
+        let pasteVerifiable = canVerifyInsertion(valueBefore: valueBeforeInsertion, in: target.element)
+        if pasteSucceeded || !pasteVerifiable {
             return
         }
 
@@ -652,13 +696,32 @@ final class ScreenTypingService {
         }
     }
 
-    /// Some editors (custom canvases, certain Electron/WebKit views) never
-    /// expose `kAXValueAttribute` or `kAXSelectedTextRangeAttribute`, so
-    /// `insertionSucceeded` can never observe a change even when a real
-    /// paste keystroke landed. Treat "nothing readable before or after" as
-    /// unverifiable rather than as a failure, so a genuine paste isn't
-    /// discarded and retried into duplicate insertions.
+    /// Roles whose `kAXValueAttribute` is a live mirror of what the field
+    /// contains. Anything else may expose a value that never moves, and a
+    /// verification against it can only ever say "no".
+    private static let verifiableTextRoles: Set<String> = [
+        kAXTextFieldRole as String,
+        kAXTextAreaRole as String,
+        kAXComboBoxRole as String
+    ]
+
+    /// Whether a failed `insertionSucceeded` check on this element means
+    /// anything at all.
+    ///
+    /// Some editors (custom canvases, Electron and WebKit views) never expose
+    /// a usable `kAXValueAttribute`, so the check can't observe a change even
+    /// when a real paste landed — treating that as failure is what retried one
+    /// insertion into three.
+    ///
+    /// Readability alone is not the test. Chromium publishes its composer as
+    /// an `AXGroup` that reports a *readable, settable, permanently empty*
+    /// value and a selection range that never advances: it satisfied the old
+    /// non-nil check while carrying no information, so every verification
+    /// failed and every fallback pasted again. Demand a role whose value is
+    /// actually the field's text before trusting a negative result.
     private func canVerifyInsertion(valueBefore: String?, in element: AXUIElement) -> Bool {
+        let role = stringAttribute(kAXRoleAttribute, from: element) ?? ""
+        guard Self.verifiableTextRoles.contains(role) else { return false }
         if valueBefore != nil { return true }
         if rangeAttribute(kAXSelectedTextRangeAttribute, from: element) != nil { return true }
         if stringAttribute(kAXValueAttribute, from: element) != nil { return true }
