@@ -36,24 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // A shortcut capture can never survive an app launch. This is also a
-        // belt-and-braces reset for builds from before capture state became
-        // in-memory-only.
-        DictationShortcutCapture.isActive = false
-        UserDefaults.standard.removeObject(forKey: "isRecordingDictationShortcut")
-        if yieldToRunningInstance() {
-            NSApp.terminate(nil)
-            return
-        }
-        if ScreenPlanSelfTest.isRequested {
-            Task { await ScreenPlanSelfTest.run() }
-            return
-        }
-        DispatchQueue.main.async { [weak self] in
-            self?.configureWindows(expanded: false)
-            self?.startPointerPassthroughMonitoring()
-        }
+    /// Registered before the scene exists, not after.
+    ///
+    /// `applicationDidFinishLaunching` runs *after* SwiftUI's first render, so
+    /// the balloon's one-shot `.onAppear` measurement was posted into a
+    /// notification centre nobody was listening to yet — and since the size
+    /// then never changed, it was never re-sent. The compact window was left
+    /// sizing itself from the 250x340 fallback.
+    func applicationWillFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
             forName: .clippyWindowLevelChanged,
             object: nil,
@@ -88,6 +78,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let size = notification.object as? CGSize else { return }
             self?.balloonContentSize = size
             self?.updatePointerPassthrough()
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // A shortcut capture can never survive an app launch. This is also a
+        // belt-and-braces reset for builds from before capture state became
+        // in-memory-only.
+        DictationShortcutCapture.isActive = false
+        UserDefaults.standard.removeObject(forKey: "isRecordingDictationShortcut")
+        if yieldToRunningInstance() {
+            NSApp.terminate(nil)
+            return
+        }
+        if ScreenPlanSelfTest.isRequested {
+            Task { await ScreenPlanSelfTest.run() }
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.configureWindows(expanded: false)
+            self?.startPointerPassthroughMonitoring()
         }
         // Follow the display you're actually working on. `.canJoinAllSpaces`
         // above only spans Spaces — an NSWindow still lives on exactly one
@@ -136,14 +146,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             window.level = (!isExpanded || floating) ? .floating : .normal
             window.isMovableByWindowBackground = true
-            // Deliberately no `styleMask` assignment. The window keeps
-            // SwiftUI's default `.titled` mask: `.borderless` can't become
-            // key, which silently kills every keystroke in the chat field,
-            // and `.fullSizeContentView` leaves SwiftUI's hosting view 28pt
-            // short and pinned to the bottom of the content view, which drew
-            // the custom title bar off the top edge. The native title strip
-            // that `.titled` reserves is fully transparent here, so it shows
-            // the desktop rather than any chrome of its own.
+            // Only `.fullSizeContentView` comes off; `.titled` stays. That
+            // flag stretches the content view over the title region, which
+            // leaves SwiftUI a 28pt top safe-area inset — and the root view
+            // ignores safe areas, which SwiftUI resolves by extending its
+            // layout *upwards*, drawing everything 28pt high and pushing the
+            // custom title bar off the top edge. Without the flag there is no
+            // inset to ignore. `.titled` itself has to stay: a borderless
+            // window can't become key, which silently kills every keystroke
+            // in the chat field. The strip `.titled` reserves is transparent,
+            // so it shows the desktop rather than chrome of its own.
+            window.styleMask.remove(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -290,16 +303,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointerPassthroughTimer = timer
     }
 
-    /// Grows a window that has become smaller than the content it holds.
+    /// Grows a window that has ended up smaller than its own minimum.
     ///
-    /// SwiftUI keeps `minSize` in step with the content's own minimum, but
-    /// AppKit only applies a minimum when a frame is *set* — content that
-    /// grows later (a screen-plan banner appearing, a taller balloon) leaves
-    /// the window too short, and the overflow runs off the top edge, taking
-    /// the custom title bar with it. Anchored at the bottom so the character
-    /// and composer stay where they are, and clamped to the screen.
-    private func growToFitContent(_ window: NSWindow) {
-        guard !window.isSheet, window.attachedSheet == nil else { return }
+    /// `resize` sets an explicit frame, and AppKit only applies `minSize` at
+    /// the moment a frame is set — SwiftUI publishes the expanded layout's
+    /// minimum a beat later, so the window stayed 28pt short of it and the
+    /// overflow ran off the top edge, taking the title bar with it.
+    private func growToFitMinimum(_ window: NSWindow) {
         let minimum = window.minSize
         guard minimum.width > 0, minimum.height > 0 else { return }
         let frame = window.frame
@@ -310,10 +320,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard size != frame.size else { return }
         var origin = NSPoint(x: frame.minX, y: frame.maxY - size.height)
         if let visible = window.screen?.visibleFrame {
-            origin.y = min(max(origin.y, visible.minY), max(visible.maxY - size.height, visible.minY))
             origin.x = min(max(origin.x, visible.minX), max(visible.maxX - size.width, visible.minX))
+            origin.y = min(max(origin.y, visible.minY), max(visible.maxY - size.height, visible.minY))
         }
         window.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+
+    /// Sizes a window to the content it is drawing: the balloon when compact,
+    /// the declared minimum when expanded.
+    ///
+    /// The window can't learn this from SwiftUI: `minSize` only ever reflects
+    /// the *declared* minimum (250x340), never what the balloon actually
+    /// needs, so a balloon carrying a plan card plus the action list (~430pt)
+    /// was laid out bottom-anchored in a 340pt window and lost its top rows
+    /// off the edge. `balloonContentSize` is already measured and relayed for
+    /// the pointer hit region; the same number sizes the window. Grown
+    /// upwards, so the character stays where the user parked it.
+    private func fitWindowToContent(_ window: NSWindow) {
+        guard !window.isSheet, window.attachedSheet == nil else { return }
+        guard !isExpanded else { return growToFitMinimum(window) }
+        let chrome = window.frame.height - (window.contentView?.frame.height ?? window.frame.height)
+        let needed = max(340, balloonContentSize.height + Self.compactBottomInset) + chrome
+        guard abs(needed - window.frame.height) > 0.5 else { return }
+        var frame = window.frame
+        frame.size.height = needed
+        if let visible = window.screen?.visibleFrame {
+            frame.origin.y = min(max(frame.minY, visible.minY), max(visible.maxY - needed, visible.minY))
+        }
+        window.setFrame(frame, display: true)
     }
 
     private func updatePointerPassthrough() {
@@ -328,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // they can cover a whole display, and making them catch the pointer
             // swallows every click meant for the app underneath.
             guard window.identifier != clippyOverlayWindowIdentifier else { continue }
-            growToFitContent(window)
+            fitWindowToContent(window)
 
             // Expanded chat and sheets fill their window for real, so the whole
             // frame is legitimately interactive there.

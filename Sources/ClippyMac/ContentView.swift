@@ -258,6 +258,11 @@ struct ContentView: View {
                 .onTapGesture(count: 2) { viewModel.setExpanded(true) }
                 .help(compactBalloonVisible ? "Hide balloon; double-click to open chat" : "Show balloon")
         }
+        // Take the balloon's ideal height rather than whatever the window
+        // currently proposes: squeezed to the proposal it reported the
+        // squeezed height as its size, so the window never learned it had to
+        // be taller and the balloon lost its top rows.
+        .fixedSize(horizontal: false, vertical: true)
         // Measures the balloon+sprite's real rendered size and relays it to
         // AppDelegate so the click-catching window can shrink to match — a
         // PreferenceKey/.onPreferenceChange here never delivered anything
