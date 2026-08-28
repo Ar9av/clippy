@@ -265,6 +265,12 @@ Homebrew, npm, and user-local install locations and runs `claude -p`.
 Install Codex and authenticate once in Terminal. Clippy runs `codex exec` with
 network and file mutation disabled by the `read-only` sandbox.
 
+Both CLIs take a model in **Settings → Model and behavior**: pick one of the
+listed shortcuts (`opus`, `sonnet`, `haiku`, … for Claude Code; `gpt-5.6-luna`,
+`gpt-5.3-codex`, … for Codex) or type any model slug your account can reach.
+Leave it on **The CLI's own default** to let the CLI decide. The choice is
+remembered per provider.
+
 ### APIs
 
 Select OpenAI API or Anthropic API in Settings, enter a model and API key, then

@@ -446,11 +446,12 @@ public enum AIService {
         )
         switch provider {
         case .claudeCLI:
-            return try await runClaude(prompt: prompt, attachments: attachments)
+            return try await runClaude(prompt: prompt, attachments: attachments, model: model)
         case .codexCLI:
             return try await runCodex(
                 prompt: prompt,
-                attachments: attachments
+                attachments: attachments,
+                model: model
             )
         case .openAI:
             guard let apiKey, !apiKey.isEmpty else { throw ClippyError.missingAPIKey("OpenAI") }
@@ -497,9 +498,9 @@ public enum AIService {
         let cliPrompt = "\(instruction)\n\n\(prompt)"
         switch provider {
         case .claudeCLI:
-            return try await runClaude(prompt: cliPrompt, attachments: [])
+            return try await runClaude(prompt: cliPrompt, attachments: [], model: model)
         case .codexCLI:
-            return try await runCodex(prompt: cliPrompt, attachments: [])
+            return try await runCodex(prompt: cliPrompt, attachments: [], model: model)
         case .openAI:
             guard let apiKey, !apiKey.isEmpty else { throw ClippyError.missingAPIKey("OpenAI") }
             return try await callOpenAI(
@@ -571,11 +572,16 @@ public enum AIService {
         """
     }
 
-    private static func runClaude(prompt: String, attachments: [URL]) async throws -> String {
+    private static func runClaude(
+        prompt: String,
+        attachments: [URL],
+        model: String = ""
+    ) async throws -> String {
         guard let executable = findExecutable(named: "claude") else {
             throw ClippyError.missingCLI("Claude Code")
         }
         var arguments = ["-p", prompt, "--output-format", "text"]
+        arguments += modelArguments("--model", model)
         // Attachments are handed to this CLI as paths for it to open itself,
         // and they live outside its working directory — screenshots in
         // Caches/Clippy/ScreenContext, pasted files in PastedAttachments.
@@ -611,7 +617,19 @@ public enum AIService {
         return directories
     }
 
-    private static func runCodex(prompt: String, attachments: [URL]) async throws -> String {
+    /// `--model` for a CLI, or nothing at all when no model is chosen — the
+    /// empty setting means "whatever the CLI defaults to", so the flag has to
+    /// be absent rather than passed empty.
+    static func modelArguments(_ flag: String, _ model: String) -> [String] {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [flag, trimmed]
+    }
+
+    private static func runCodex(
+        prompt: String,
+        attachments: [URL],
+        model: String = ""
+    ) async throws -> String {
         guard let executable = findExecutable(named: "codex") else {
             throw ClippyError.missingCLI("Codex")
         }
@@ -630,6 +648,7 @@ public enum AIService {
             "--ignore-rules",
             "-o", outputURL.path
         ]
+        arguments += modelArguments("--model", model)
         for attachment in attachments where isImage(attachment) {
             arguments.append(contentsOf: ["-i", attachment.path])
         }

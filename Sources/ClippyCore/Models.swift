@@ -55,6 +55,29 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
         self == .local
     }
 
+    /// Whether the provider runs a local CLI rather than an HTTP API. Those
+    /// two accept `--model`, so they get a model setting like the rest — it
+    /// was previously fixed to whatever the CLI itself defaulted to.
+    public var usesCLI: Bool {
+        self == .claudeCLI || self == .codexCLI
+    }
+
+    /// Models offered as a shortcut in Settings. Never a whitelist: the field
+    /// beside them stays free text, because both CLIs accept any model slug
+    /// the signed-in account can reach.
+    ///
+    /// ponytail: hand-written list, refresh it when the CLIs ship new names.
+    /// The free-text field is what keeps a stale list from blocking anyone.
+    public var suggestedModels: [String] {
+        switch self {
+        case .claudeCLI: ["fable", "opus", "sonnet", "haiku"]
+        case .codexCLI: ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex"]
+        case .openAI: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
+        case .anthropic: ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-haiku-20241022"]
+        case .local: []
+        }
+    }
+
     public var defaultModel: String {
         switch self {
         case .claudeCLI, .codexCLI: ""

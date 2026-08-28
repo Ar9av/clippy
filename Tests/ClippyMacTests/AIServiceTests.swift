@@ -33,4 +33,14 @@ final class AIServiceTests: XCTestCase {
         // A marker with nothing in front of it isn't a real reply to draft.
         XCTAssertNil(AIService.screenReplyTarget(from: "[[CLIPPY_REPLY_AT:10,20]]"))
     }
+
+    func testModelFlagIsOmittedWhenNoModelChosen() {
+        XCTAssertEqual(AIService.modelArguments("--model", ""), [])
+        XCTAssertEqual(AIService.modelArguments("--model", "   "), [])
+    }
+
+    func testModelFlagIsPassedWhenChosen() {
+        XCTAssertEqual(AIService.modelArguments("--model", "sonnet"), ["--model", "sonnet"])
+        XCTAssertEqual(AIService.modelArguments("--model", " gpt-5.6-luna "), ["--model", "gpt-5.6-luna"])
+    }
 }

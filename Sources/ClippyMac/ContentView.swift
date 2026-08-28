@@ -2017,9 +2017,16 @@ struct SettingsView: View {
                             .font(RetroPalette.font(11))
                             .foregroundStyle(RetroPalette.text)
                     } else {
-                        Text("The CLI’s configured default model will be used.")
+                        Text("Which model \(viewModel.provider.shortTitle) answers with. The list is a shortcut — the CLI takes any model your account can reach, so type one in if it isn’t here.")
                             .font(RetroPalette.font(11))
                             .foregroundStyle(RetroPalette.text)
+                        RetroRadioGroup(
+                            options: [("", "The CLI’s own default")]
+                                + viewModel.provider.suggestedModels.map { ($0, $0) },
+                            selection: $viewModel.model
+                        )
+                        TextField("Or type a model name", text: $viewModel.model)
+                            .autocorrectionDisabled()
                     }
                     Toggle("Read replies aloud", isOn: $viewModel.speakReplies)
                     Toggle("Keep \(viewModel.character.title) above other windows", isOn: $viewModel.alwaysOnTop)
