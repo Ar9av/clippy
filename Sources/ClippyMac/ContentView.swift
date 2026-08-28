@@ -271,7 +271,12 @@ struct ContentView: View {
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 3)
-        .frame(width: 250, height: 340, alignment: .bottom)
+        // Height follows the balloon rather than being pinned to 340. A plan
+        // card plus the action list is taller than that, and a hard frame
+        // anchored to the bottom pushed the overflow straight off the top of
+        // the window, where it was clipped away. AppDelegate grows the window
+        // to whatever minimum this reports.
+        .frame(minWidth: 250, maxWidth: 250, minHeight: 340, alignment: .bottom)
     }
 
     private var classicBalloon: some View {

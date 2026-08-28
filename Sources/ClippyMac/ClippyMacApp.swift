@@ -136,12 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             window.level = (!isExpanded || floating) ? .floating : .normal
             window.isMovableByWindowBackground = true
-            // The app supplies its own complete title bar. `.fullSizeContentView`
-            // lets the hosting view extend under the native title region so the
-            // custom blue caption isn't pushed below an empty strip. Keep
-            // `.titled` — a borderless window can't become key, which silently
-            // kills all keyboard input in the chat text field.
-            window.styleMask = [.titled, .fullSizeContentView, .resizable, .miniaturizable]
+            // Deliberately no `styleMask` assignment. The window keeps
+            // SwiftUI's default `.titled` mask: `.borderless` can't become
+            // key, which silently kills every keystroke in the chat field,
+            // and `.fullSizeContentView` leaves SwiftUI's hosting view 28pt
+            // short and pinned to the bottom of the content view, which drew
+            // the custom title bar off the top edge. The native title strip
+            // that `.titled` reserves is fully transparent here, so it shows
+            // the desktop rather than any chrome of its own.
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -288,6 +290,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointerPassthroughTimer = timer
     }
 
+    /// Grows a window that has become smaller than the content it holds.
+    ///
+    /// SwiftUI keeps `minSize` in step with the content's own minimum, but
+    /// AppKit only applies a minimum when a frame is *set* — content that
+    /// grows later (a screen-plan banner appearing, a taller balloon) leaves
+    /// the window too short, and the overflow runs off the top edge, taking
+    /// the custom title bar with it. Anchored at the bottom so the character
+    /// and composer stay where they are, and clamped to the screen.
+    private func growToFitContent(_ window: NSWindow) {
+        guard !window.isSheet, window.attachedSheet == nil else { return }
+        let minimum = window.minSize
+        guard minimum.width > 0, minimum.height > 0 else { return }
+        let frame = window.frame
+        let size = NSSize(
+            width: max(frame.width, minimum.width),
+            height: max(frame.height, minimum.height)
+        )
+        guard size != frame.size else { return }
+        var origin = NSPoint(x: frame.minX, y: frame.maxY - size.height)
+        if let visible = window.screen?.visibleFrame {
+            origin.y = min(max(origin.y, visible.minY), max(visible.maxY - size.height, visible.minY))
+            origin.x = min(max(origin.x, visible.minX), max(visible.maxX - size.width, visible.minX))
+        }
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+
     private func updatePointerPassthrough() {
         let pointer = NSEvent.mouseLocation
         let defaults = UserDefaults.standard
@@ -300,6 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // they can cover a whole display, and making them catch the pointer
             // swallows every click meant for the app underneath.
             guard window.identifier != clippyOverlayWindowIdentifier else { continue }
+            growToFitContent(window)
 
             // Expanded chat and sheets fill their window for real, so the whole
             // frame is legitimately interactive there.
