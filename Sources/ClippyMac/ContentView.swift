@@ -48,7 +48,6 @@ struct ContentView: View {
     // directly instead, same reasoning as OnboardingView/SettingsView.
     @ObservedObject var speech: SpeechService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hoveringClippy = false
     @State private var compactInputActive = false
     @State private var compactBalloonVisible = true
     @State private var pasteMonitor: Any?
@@ -180,11 +179,9 @@ struct ContentView: View {
     private var expandedAssistant: some View {
         VStack(spacing: 0) {
             header
-            // The transcript is a sunken white well, the way every chat client
-            // of the era framed its log. Without it the messages floated
-            // directly on the window face with nothing containing them, which
-            // is what made the window look unfinished — and made a message
-            // scrolled under the toolbar look clipped rather than scrolled.
+            // Keep the transcript on the same grey dialog face as the rest
+            // of the assistant. The compact Office-style reference uses a
+            // continuous surface, not a modern white chat canvas.
             Group {
                 // The dashboard takes the conversation's place rather than
                 // opening a sheet: a background check is something you glance
@@ -196,10 +193,10 @@ struct ContentView: View {
                     conversation
                 }
             }
-            .background(RetroPalette.fieldBackground)
-            .retroBevel(.sunken)
-            .padding(.horizontal, 8)
-            .padding(.top, 6)
+            .background(RetroPalette.face)
+            .retroBevel(.staticEdge)
+            .padding(.horizontal, 5)
+            .padding(.top, 4)
             if let plan = viewModel.pendingScreenPlan {
                 screenPlanBanner(plan)
             }
@@ -215,7 +212,7 @@ struct ContentView: View {
             composer
         }
         .background(RetroFace())
-        .frame(minWidth: 420, minHeight: 560)
+        .frame(minWidth: 360, minHeight: 480)
         // Nothing may paint outside the window's own frame. Without this a
         // subview that overshoots its bounds renders over the desktop, beyond
         // the bevel, which reads as the window being broken rather than the
@@ -279,6 +276,9 @@ struct ContentView: View {
 
     private var classicBalloon: some View {
         VStack(alignment: .leading, spacing: 11) {
+            if let error = viewModel.errorMessage {
+                compactErrorDetail(error)
+            } else {
             // The balloon is the surface a notification should appear on — it
             // is what is on screen when you are not in the full window, which
             // is exactly when a terminal session finishing is worth telling
@@ -378,17 +378,9 @@ struct ContentView: View {
                     )
                 }
 
-                if viewModel.errorMessage != nil {
-                    HStack(spacing: 12) {
-                        Button("Try again") { viewModel.retryLastRequest() }
-                        Button("Full chat") { viewModel.setExpanded(true) }
-                    }
-                    .font(.system(size: 11))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.blue)
-                }
             } else {
                 compactMenu
+            }
             }
         }
         .padding(.top, 13)
@@ -406,6 +398,37 @@ struct ContentView: View {
             ClassicBalloonShape()
                 .stroke(Color.black.opacity(0.9), lineWidth: 1.5)
         )
+    }
+
+    /// Errors take over the balloon instead of competing with its action
+    /// menu. The detail is scrollable rather than truncated, so an
+    /// Accessibility or provider failure can be understood without opening a
+    /// second window just to read the missing end of a sentence.
+    private func compactErrorDetail(_ error: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("I couldn’t finish that")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.black)
+
+            ScrollView {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: 158)
+
+            HStack(spacing: 12) {
+                Button("Try again") { viewModel.retryLastRequest() }
+                Button("Open full chat") { viewModel.setExpanded(true) }
+                Button("Dismiss") { viewModel.errorMessage = nil }
+            }
+            .font(.system(size: 10))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.blue)
+        }
     }
 
     @ViewBuilder
@@ -855,14 +878,17 @@ struct ContentView: View {
     private var header: some View {
         VStack(spacing: 0) {
             RetroTitleBar(
-                title: viewModel.character.title,
+                title: "Chat with \(viewModel.character.title)",
                 // Minimising a chat window that lives as a desktop character
                 // means going back to being the character — not vanishing into
                 // the Dock, which is where the user would then have to hunt
                 // for it.
-                onMinimize: { viewModel.setExpanded(false) },
+                onMinimize: {
+                    NSApplication.shared.keyWindow?.miniaturize(nil)
+                },
                 onMaximize: toggleMaximized,
                 isMaximized: isMaximized,
+                onSettings: { viewModel.showSettings = true },
                 // Close gets out of the way entirely: back to the paperclip
                 // with its balloon dismissed. Reversible with a click on
                 // Clippy, so nothing is lost.
@@ -872,53 +898,7 @@ struct ContentView: View {
                 }
             )
 
-            HStack(spacing: 9) {
-                StaticClippyView()
-                    .frame(width: 40, height: 40)
-                    .scaleEffect(hoveringClippy ? 1.04 : 1)
-                    .onHover { hoveringClippy = $0 }
-                    .animation(.spring(response: 0.25), value: hoveringClippy)
-
-                HStack(spacing: 6) {
-                    Text(statusMessage)
-                        .font(RetroPalette.font(11))
-                        .foregroundStyle(RetroPalette.text)
-                        .lineLimit(1)
-                    if speech.isListening {
-                        ListeningWaveform(level: speech.audioLevel, barCount: 4, color: .red)
-                            .frame(width: 24, height: 14)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 3) {
-                    // Only in the expanded window: the compact balloon has no
-                    // room to render a dashboard.
-                    if viewModel.isExpanded {
-                        headerButton(
-                            showScheduleDashboard ? "bubble.left.and.bubble.right.fill" : "clock.badge.checkmark",
-                            help: showScheduleDashboard ? "Back to conversation" : "Scheduled checks"
-                        ) {
-                            showScheduleDashboard.toggle()
-                        }
-                    }
-                    headerButton("clock.arrow.circlepath", help: "Chat history") {
-                        showHistory = true
-                    }
-                    headerButton("square.and.pencil", help: "New conversation") {
-                        viewModel.clearConversation()
-                    }
-                    headerButton("gearshape.fill", help: "Settings") {
-                        viewModel.showSettings = true
-                    }
-                }
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
         }
-        // Deliberately no background: the window's translucent face shows
-        // through, so the toolbar and the conversation are one continuous
-        // tone. An opaque fill here left a visible seam under the toolbar.
     }
 
     /// Grows the chat window to fill the screen it's on, and back again.
@@ -941,24 +921,6 @@ struct ContentView: View {
             window.setFrame(screen.visibleFrame, display: true, animate: true)
             isMaximized = true
         }
-    }
-
-    private func headerButton(
-        _ systemName: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(RetroPalette.text)
-                .frame(width: 22, height: 20)
-        }
-        // A toolbar button is a small square bevel, not a circle. The glyphs
-        // stay SF Symbols: hand-drawn 16px icons would read as a different
-        // kind of pastiche, and these are legible at this size.
-        .buttonStyle(RetroButtonStyle(minWidth: 22))
-        .help(help)
     }
 
     private var statusMessage: String {
@@ -1019,10 +981,11 @@ struct ContentView: View {
     private func conversationScroll(_ proxy: ScrollViewProxy) -> some View {
         GeometryReader { viewport in
             ScrollView {
-                LazyVStack(spacing: 11) {
+                LazyVStack(spacing: 4) {
                     ForEach(Array(viewModel.visibleMessages.enumerated()), id: \.element.id) { index, message in
                         MessageBubble(
                             message: message,
+                            assistantTitle: viewModel.character.title,
                             showsPortrait: index == 0
                                 || viewModel.visibleMessages[index - 1].role != message.role
                         )
@@ -1050,8 +1013,8 @@ struct ContentView: View {
                         .frame(height: 1)
                         .id("conversation-bottom")
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 4)
                 .background(
                     GeometryReader { content in
                         Color.clear.preference(
@@ -1069,6 +1032,7 @@ struct ContentView: View {
             // The native indicator is replaced by RetroScrollBar, which is
             // drawn as part of the window rather than floating over it.
             .scrollIndicators(.hidden)
+            .overlay(NativeScrollIndicatorHider().allowsHitTesting(false))
             .onPreferenceChange(RetroScrollMetricsKey.self) { scrollMetrics = $0 }
             .onAppear {
                 // A full-chat open creates this view anew. Deferring one run-loop
@@ -1098,26 +1062,25 @@ struct ContentView: View {
     }
 
     private var suggestionGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+        VStack(alignment: .leading, spacing: 3) {
             ForEach(suggestions, id: \.self) { suggestion in
                 Button {
                     viewModel.send(suggestion)
                 } label: {
-                    Text(suggestion)
-                        .font(.caption)
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                        .padding(.horizontal, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(.background.opacity(0.85))
-                                .stroke(Color.secondary.opacity(0.18))
-                        )
+                    HStack(spacing: 5) {
+                        Text("•")
+                        Text(suggestion)
+                    }
+                    .font(RetroPalette.font(10))
+                    .foregroundStyle(RetroPalette.titleBar)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 1)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.top, 2)
+        .padding(.top, 4)
+        .padding(.bottom, 3)
     }
 
     private func errorBanner(_ error: String) -> some View {
@@ -1363,7 +1326,7 @@ struct ContentView: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 4) {
             if !matchingCommands.isEmpty {
                 commandPalette
             }
@@ -1399,14 +1362,14 @@ struct ContentView: View {
                 .accessibilityLabel("Attachments ready to send")
             }
 
-            HStack(alignment: .bottom, spacing: 9) {
+            HStack(alignment: .center, spacing: 4) {
                 Button {
                     chooseAttachments()
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 13))
                         .foregroundStyle(RetroPalette.text)
-                        .frame(width: 24, height: 22)
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(RetroButtonStyle(minWidth: 24))
                 .disabled(viewModel.isLoading)
@@ -1418,7 +1381,7 @@ struct ContentView: View {
                     Image(systemName: "doc.on.clipboard")
                         .font(.system(size: 13))
                         .foregroundStyle(RetroPalette.text)
-                        .frame(width: 24, height: 22)
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(RetroButtonStyle(minWidth: 24))
                 .disabled(viewModel.isLoading)
@@ -1426,11 +1389,11 @@ struct ContentView: View {
 
                 TextField("Ask \(viewModel.character.title) anything…", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .lineLimit(1...5)
-                    .font(RetroPalette.font(12))
+                    .lineLimit(1...3)
+                    .font(RetroPalette.font(10))
                     .foregroundStyle(RetroPalette.text)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 3)
                     .background(RetroPalette.fieldBackground)
                     .retroBevel(.sunken)
                     .onSubmit {
@@ -1441,7 +1404,7 @@ struct ContentView: View {
 
                 if speech.isListening {
                     ListeningWaveform(level: speech.audioLevel)
-                        .frame(width: 30, height: 27)
+                        .frame(width: 24, height: 22)
                         .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 }
 
@@ -1454,7 +1417,7 @@ struct ContentView: View {
                     // producing its transcript.
                     ProgressView()
                         .controlSize(.small)
-                        .frame(width: 27, height: 27)
+                        .frame(width: 22, height: 22)
                         .help(speech.isPreparingModel ? "Loading \(speech.engine.displayName)…" : "Transcribing…")
                 } else {
                     Button {
@@ -1463,7 +1426,7 @@ struct ContentView: View {
                         Image(systemName: speech.isListening ? "waveform" : "mic")
                             .font(.system(size: 13))
                             .foregroundStyle(speech.isListening ? Color.red : RetroPalette.text)
-                            .frame(width: 24, height: 22)
+                            .frame(width: 20, height: 20)
                     }
                     .buttonStyle(RetroButtonStyle(minWidth: 24))
                     .listeningPulse(isActive: speech.isListening)
@@ -1480,7 +1443,7 @@ struct ContentView: View {
                 } label: {
                     Text((viewModel.isLoading || viewModel.isRunningScreenPlan) ? "Stop" : "Send")
                         .font(RetroPalette.font(11))
-                        .frame(height: 22)
+                        .frame(height: 20)
                 }
                 .buttonStyle(RetroButtonStyle(minWidth: 46))
                 .disabled(
@@ -1507,11 +1470,11 @@ struct ContentView: View {
             .font(RetroPalette.font(10))
             // The status line is a sunken strip along the bottom, the way
             // every window of the era ended.
-            .padding(.horizontal, 5)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
             .retroBevel(.sunken)
         }
-        .padding(8)
+        .padding(5)
     }
 
     private var elapsedText: String {
@@ -1532,19 +1495,35 @@ struct ContentView: View {
     }
 }
 
+private struct NativeScrollIndicatorHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { hideIndicators(for: view) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        hideIndicators(for: view)
+    }
+
+    private func hideIndicators(for view: NSView) {
+        guard let scrollView = view.enclosingScrollView else { return }
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+    }
+}
+
 private struct MessageBubble: View {
     let message: ChatMessage
+    let assistantTitle: String
     /// False for a reply that follows another reply — one portrait per run of
     /// messages from the same side, rather than a column of identical
     /// paperclips down the transcript.
     var showsPortrait = true
 
-    @State private var isHovered = false
-
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            if message.role == .user { Spacer(minLength: 58) }
-
+        HStack(alignment: .top, spacing: 6) {
             if message.role == .assistant {
                 // The slot is kept even when the portrait is hidden, so
                 // messages in a run stay aligned with the one that has it.
@@ -1555,10 +1534,17 @@ private struct MessageBubble: View {
                         Color.clear
                     }
                 }
-                .frame(width: 30)
+                .frame(width: 22)
+            } else {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 22, height: 18, alignment: .top)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(message.role == .user ? "You" : assistantTitle)
+                    .font(RetroPalette.font(9, bold: true))
+                    .foregroundStyle(message.role == .user ? RetroPalette.titleBar : RetroPalette.text)
                 Group {
                     if message.role == .assistant {
                         MarkdownMessageText(content: message.content)
@@ -1566,30 +1552,17 @@ private struct MessageBubble: View {
                         Text(message.content)
                     }
                 }
-                if message.role == .assistant {
-                    // Kept in the layout at all times and only faded in, so
-                    // the transcript stays quiet without messages resizing
-                    // under the pointer as you move across them.
-                    AnswerActions(content: message.content)
-                        .opacity(isHovered ? 1 : 0)
-                }
             }
-            .onHover { isHovered = $0 }
             .textSelection(.enabled)
-                .font(RetroPalette.font(12))
-                .lineSpacing(3)
-                .padding(.horizontal, message.role == .user ? 9 : 2)
-                .padding(.vertical, message.role == .user ? 7 : 2)
-                // Inside the white well, Clippy's replies are just text on the
-                // page — boxing them drew a border around white on white and
-                // gave the log a boxes-inside-boxes look. Yours stay a grey
-                // panel, which is what distinguishes the two sides now that
-                // the well provides the outer frame.
+                .font(RetroPalette.font(10))
+                .lineSpacing(1)
+                .padding(.horizontal, 1)
+                .padding(.vertical, 2)
                 .background(message.role == .user ? RetroPalette.light : Color.clear)
                 .retroBevel(message.role == .user ? .staticEdge : .none)
                 .foregroundStyle(RetroPalette.text)
 
-            if message.role == .assistant { Spacer(minLength: 58) }
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
     }
@@ -1645,37 +1618,36 @@ private struct MarkdownMessageText: View {
     let content: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(MarkdownBlock.parse(content)) { block in
                 switch block.kind {
                 case .heading(let level, let text):
                     inlineText(text)
-                        .font(.system(size: level == 1 ? 17 : 15, weight: .bold))
-                        .padding(.top, block.isFirst ? 0 : 3)
+                        .font(RetroPalette.font(level == 1 ? 12 : 11, bold: true))
+                        .padding(.top, block.isFirst ? 0 : 2)
                 case .paragraph(let text):
                     inlineText(text)
                 case .bullet(let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text("•").fontWeight(.bold)
                         inlineText(text)
                     }
                 case .numbered(let number, let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text("\(number).")
                             .fontWeight(.semibold)
-                            .frame(minWidth: 18, alignment: .trailing)
+                            .frame(minWidth: 14, alignment: .trailing)
                         inlineText(text)
                     }
                 case .code(let code):
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(code)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.system(size: 10, design: .monospaced))
                             .textSelection(.enabled)
-                            .padding(9)
+                            .padding(5)
                     }
                     .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.black.opacity(0.14))
+                        Rectangle().fill(RetroPalette.light)
                     )
                 }
             }
@@ -1912,6 +1884,16 @@ private enum ShortcutCaptureTarget: Equatable {
     case voiceAction(UUID)
 }
 
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case appearance = "Appearance"
+    case model = "Model"
+    case parameters = "Parameters"
+    case advanced = "Advanced"
+    case about = "About"
+
+    var id: Self { self }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
     // See the matching comment in OnboardingView.swift: `SpeechService` is a
@@ -1931,14 +1913,17 @@ struct SettingsView: View {
     @State private var recordingShortcut: ShortcutCaptureTarget?
     @State private var shortcutCaptureMonitor: Any?
     @State private var modifierCaptureTask: Task<Void, Never>?
+    @State private var selectedSettingsTab: SettingsTab = .appearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            settingsTabStrip
             // Scrollable: a fixed-height VStack silently overflows past the
             // sheet's frame instead of resizing it — the Dictation section
             // pushed total content past 680pt and clipped the header (title
             // + Done button) off-screen. Same root cause and fix as
             // OnboardingView's ScrollView.
+            ScrollViewReader { settingsScrollProxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
             GroupBox("AI provider") {
@@ -1953,6 +1938,7 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            .id(SettingsTab.model)
 
             if viewModel.provider.needsAPIKey {
                 GroupBox("Credentials") {
@@ -2010,6 +1996,7 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            .id(SettingsTab.appearance)
 
             GroupBox("Model and behavior") {
                 VStack(alignment: .leading, spacing: 12) {
@@ -2202,6 +2189,7 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            .id(SettingsTab.parameters)
 
             GroupBox("Dictation") {
                 VStack(alignment: .leading, spacing: 10) {
@@ -2282,6 +2270,7 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            .id(SettingsTab.advanced)
 
             GroupBox("Write in other apps") {
                 VStack(alignment: .leading, spacing: 10) {
@@ -2349,8 +2338,20 @@ struct SettingsView: View {
             Text("Subscription modes use the locally installed CLI and its existing login. API usage is billed by the selected provider.")
                 .font(RetroPalette.font(10))
                 .foregroundStyle(RetroPalette.disabledText)
+                .id(SettingsTab.about)
                 }
                 .padding(.vertical, 2)
+            }
+            .onAppear {
+                DispatchQueue.main.async {
+                    settingsScrollProxy.scrollTo(selectedSettingsTab, anchor: .top)
+                }
+            }
+            .onChange(of: selectedSettingsTab) { _, tab in
+                withAnimation(.easeOut(duration: 0.15)) {
+                    settingsScrollProxy.scrollTo(tab, anchor: .top)
+                }
+            }
             }
 
             // Classic dialogs put their commit button bottom-right. Only OK,
@@ -2379,6 +2380,22 @@ struct SettingsView: View {
             saveError = nil
         }
         .onDisappear { stopShortcutCapture() }
+    }
+
+    private var settingsTabStrip: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button(tab.rawValue) { selectedSettingsTab = tab }
+                    .buttonStyle(ClassicTabButtonStyle(isSelected: selectedSettingsTab == tab))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 4)
+        .padding(.top, 2)
+        .background(RetroPalette.face)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(RetroPalette.shadow).frame(height: 1)
+        }
     }
 
     @ViewBuilder

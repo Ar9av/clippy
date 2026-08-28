@@ -223,6 +223,38 @@ struct RetroButtonStyle: ButtonStyle {
     }
 }
 
+/// Tabs from a Windows 95 property sheet: inactive tabs sit on the grey
+/// dialog face while the selected tab becomes the white content surface.
+struct ClassicTabButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(RetroPalette.font(11))
+            .foregroundStyle(RetroPalette.text)
+            .padding(.horizontal, 9)
+            .frame(minHeight: 23)
+            .background(isSelected ? RetroPalette.fieldBackground : RetroPalette.face)
+            .overlay(alignment: .top) {
+                Rectangle().fill(RetroPalette.highlight).frame(height: 1)
+            }
+            .overlay(alignment: .leading) {
+                Rectangle().fill(RetroPalette.highlight).frame(width: 1)
+            }
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(RetroPalette.shadow).frame(width: 1)
+            }
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(isSelected ? RetroPalette.fieldBackground : RetroPalette.shadow)
+                    .frame(height: 1)
+            }
+            .offset(y: isSelected ? 1 : 0)
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .contentShape(Rectangle())
+    }
+}
+
 struct RetroTextFieldStyle: TextFieldStyle {
     // swiftlint:disable:next identifier_name
     func _body(configuration: TextField<Self._Label>) -> some View {
@@ -585,6 +617,7 @@ struct RetroTitleBar: View {
     var onMinimize: (() -> Void)?
     var onMaximize: (() -> Void)?
     var isMaximized = false
+    var onSettings: (() -> Void)?
     var onClose: (() -> Void)?
 
     var body: some View {
@@ -595,6 +628,10 @@ struct RetroTitleBar: View {
                 .padding(.leading, 3)
             Spacer(minLength: 8)
             HStack(spacing: 2) {
+                if let onSettings {
+                    Button("Settings", action: onSettings)
+                        .buttonStyle(RetroButtonStyle(minWidth: 52, compact: true))
+                }
                 titleButton(.minimize, action: onMinimize)
                 titleButton(isMaximized ? .restore : .maximize, action: onMaximize)
                 // The close box sits slightly apart, as it did.
@@ -604,6 +641,7 @@ struct RetroTitleBar: View {
         }
         .padding(.horizontal, 3)
         .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
         // Height comes from the content, deliberately. A fixed `.frame(height:)`
         // here does not clip — anything taller spilled past it while the
         // gradient behind stayed 20pt, so the buttons showed as grey tabs

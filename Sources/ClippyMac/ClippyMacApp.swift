@@ -136,7 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             window.level = (!isExpanded || floating) ? .floating : .normal
             window.isMovableByWindowBackground = true
+            // The app supplies its own complete title bar. `.fullSizeContentView`
+            // lets the hosting view extend under the native title region so the
+            // custom blue caption isn't pushed below an empty strip. Keep
+            // `.titled` — a borderless window can't become key, which silently
+            // kills all keyboard input in the chat text field.
+            window.styleMask = [.titled, .fullSizeContentView, .resizable, .miniaturizable]
             window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.standardWindowButton(.closeButton)?.isHidden = true
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
@@ -151,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func resize(_ window: NSWindow, expanded: Bool) {
         let size = expanded
-            ? NSSize(width: 480, height: 680)
+            ? NSSize(width: 360, height: 500)
             : NSSize(width: 250, height: 340)
         let oldFrame = window.frame
         let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? oldFrame
