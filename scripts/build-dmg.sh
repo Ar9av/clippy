@@ -33,6 +33,14 @@ mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_ROOT" "$ICONSET_D
 
 cp "$UNIVERSAL_BIN" "$CONTENTS_DIR/MacOS/Clippy"
 cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
+
+# Stamp the version from the release tag. A hand-edited plist drifted to
+# "2.0.0" while the release was v0.2.0. CI passes CLIPPY_VERSION (its shallow
+# checkout has no tags); locally the nearest tag is used.
+VERSION="${CLIPPY_VERSION:-$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 2>/dev/null || echo 0.0.0)}"
+VERSION="${VERSION#v}"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$CONTENTS_DIR/Info.plist"
+echo "Version: $VERSION"
 cp -R "$PROJECT_DIR/Sources/ClippyMac/Resources/Characters" "$CONTENTS_DIR/Resources/Characters"
 
 # The Prismor policy that defines every on-screen refusal. Clippy fails closed

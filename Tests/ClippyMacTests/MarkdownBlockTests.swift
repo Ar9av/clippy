@@ -12,9 +12,9 @@ final class MarkdownBlockTests: XCTestCase {
         XCTAssertEqual(blocks.map(\.kind), [.heading(3, "Deep heading")])
     }
 
-    func testJoinsConsecutiveLinesIntoOneParagraph() {
+    func testConsecutiveLinesStayOneParagraphButKeepTheirBreaks() {
         let blocks = MarkdownBlock.parse("line one\nline two")
-        XCTAssertEqual(blocks.map(\.kind), [.paragraph("line one line two")])
+        XCTAssertEqual(blocks.map(\.kind), [.paragraph("line one\nline two")])
     }
 
     func testBlankLineSeparatesParagraphs() {

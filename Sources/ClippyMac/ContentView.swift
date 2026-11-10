@@ -893,22 +893,28 @@ struct ContentView: View {
                 // means going back to being the character — not vanishing into
                 // the Dock, which is where the user would then have to hunt
                 // for it.
-                onMinimize: {
-                    NSApplication.shared.keyWindow?.miniaturize(nil)
-                },
+                // (`keyWindow?.miniaturize` did nothing when the window wasn't
+                // key, and sent Clippy to the Dock when it was.)
+                onMinimize: { collapseToCharacter(showBalloon: true) },
                 onMaximize: toggleMaximized,
                 isMaximized: isMaximized,
                 onSettings: { viewModel.showSettings = true },
                 // Close gets out of the way entirely: back to the paperclip
                 // with its balloon dismissed. Reversible with a click on
                 // Clippy, so nothing is lost.
-                onClose: {
-                    viewModel.setExpanded(false)
-                    setCompactBalloonVisible(false)
-                }
+                onClose: { collapseToCharacter(showBalloon: false) }
             )
 
         }
+    }
+
+    /// Back to the floating character. Drops any maximise state so the next
+    /// expand opens at the normal size with a Maximise (not Restore) button.
+    private func collapseToCharacter(showBalloon: Bool) {
+        frameBeforeMaximize = nil
+        isMaximized = false
+        viewModel.setExpanded(false)
+        setCompactBalloonVisible(showBalloon)
     }
 
     /// Grows the chat window to fill the screen it's on, and back again.
@@ -1065,6 +1071,16 @@ struct ContentView: View {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
                         proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     }
+                }
+            }
+            // Maximise/Restore animate the frame, and the LazyVStack reflow
+            // during that animation dropped the offset — Restore landed on the
+            // oldest message. Re-pin to the latest once the resize settles.
+            // ponytail: always pins to bottom, even if the user had scrolled
+            // up; remember the offset first if that ever matters.
+            .onChange(of: isMaximized) { _, _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
@@ -1695,7 +1711,10 @@ struct MarkdownBlock: Identifiable {
 
         func flushParagraph() {
             guard !paragraph.isEmpty else { return }
-            kinds.append(.paragraph(paragraph.joined(separator: " ")))
+            // Keep single line breaks, as the balloon does. Joining with a
+            // space (CommonMark's soft break) flattened poems, addresses and
+            // unbulleted steps into one run-on line in the transcript only.
+            kinds.append(.paragraph(paragraph.joined(separator: "\n")))
             paragraph.removeAll()
         }
 

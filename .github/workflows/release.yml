@@ -80,6 +80,7 @@ jobs:
       - name: Build DMG
         env:
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          CLIPPY_VERSION: ${{ github.event.release.tag_name || inputs.upload_to_tag }}
         run: |
           chmod +x scripts/build-dmg.sh
           ./scripts/build-dmg.sh
