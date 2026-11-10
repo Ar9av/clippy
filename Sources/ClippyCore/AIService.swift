@@ -152,6 +152,46 @@ public enum AIService {
         public let response: String
     }
 
+    /// One `[[CLIPPY_POINT:…]]` or `[[CLIPPY_POINT_AT:…]]` marker.
+    public struct PointDirective: Equatable {
+        public enum Target: Equatable {
+            case id(String)
+            case point(CGPoint)
+        }
+        public let target: Target
+        public let caption: String
+        public init(target: Target, caption: String) {
+            self.target = target
+            self.caption = caption
+        }
+    }
+
+    public static let maxPoints = 4
+
+    /// Every point marker in the reply, in order (at most `maxPoints`), and the
+    /// reply with all of them removed. `nil` when there are none.
+    public static func pointDirectives(from response: String) -> (points: [PointDirective], response: String)? {
+        let pattern = #"\[\[CLIPPY_POINT(?::\s*([A-Za-z]\d+)|_AT:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?))\s*(?:\|([^\]]*))?\]\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(response.startIndex..., in: response)
+        func group(_ match: NSTextCheckingResult, _ index: Int) -> String? {
+            Range(match.range(at: index), in: response).map { String(response[$0]) }
+        }
+        let points = regex.matches(in: response, range: range).compactMap { match -> PointDirective? in
+            let caption = group(match, 4)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let id = group(match, 1) {
+                return PointDirective(target: .id(id.uppercased()), caption: caption)
+            }
+            guard let x = group(match, 2).flatMap(Double.init),
+                  let y = group(match, 3).flatMap(Double.init) else { return nil }
+            return PointDirective(target: .point(CGPoint(x: x, y: y)), caption: caption)
+        }
+        guard !points.isEmpty else { return nil }
+        let cleaned = regex.stringByReplacingMatches(in: response, range: range, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (Array(points.prefix(maxPoints)), cleaned)
+    }
+
     public struct ParsedScreenPlan {
         public let plan: PendingScreenPlan
         public let response: String
@@ -170,9 +210,14 @@ public enum AIService {
     Resolve follow-ups such as “put that on the app” from the conversation. Never say you cannot type into the app. \
     Do not use the marker for ordinary writing requests that the user only wants answered inside Clippy. \
     When a Screen Context attachment is present, use its accessibility labels and coordinates together with the screenshot. \
-    If pointing to one visible control would help, begin with [[CLIPPY_GUIDE:exact control label]]. \
-    If and only if the user explicitly asks Clippy to click a control, begin with [[CLIPPY_CLICK:exact control label]]. \
-    Only emit either marker when that exact label appears in the “Visible actionable controls” list; otherwise give visual instructions without a marker. \
+    Clippy can fly over and point at things on screen. When the user asks where something is, which one to use, what "this" is, or how to do something on screen, \
+    start the reply with [[CLIPPY_POINT:id|short caption]] using an id from Screen Context: C# for a control, L# for a line of text, W# for a single word. \
+    Point at the most specific thing — a word rather than its line, a control rather than its window. "This" or "that" means the target under the mouse. \
+    For a how-to with several steps, give up to 4 POINT markers in order, one per step, each caption saying what to do there (e.g. "Click Appearance"). \
+    A request to be shown or taught ("show me how", "how do I", "where is", "walk me through") always gets POINT markers, never a [[CLIPPY_PLAN]] — the user wants to do it themselves. \
+    For something with no id (an unlabeled icon, part of an image), use [[CLIPPY_POINT_AT:x,y|short caption]] with x,y in the shared point space. \
+    Only use ids that appear in Screen Context; never invent one. Without Screen Context, don't point — describe it in words. \
+    If and only if the user explicitly asks Clippy to click a control, begin with [[CLIPPY_CLICK:exact control label or its C# id]], only for a control in the “Visible actionable controls” list. \
     The app always asks the user to confirm before a click, so never claim the click already happened. \
     When the user asks you to get something done — even a short "open it", "do it for me", or "handle this", not just an explicit "navigate to X and type Y" — break it into whatever steps the task actually needs and return a multi-step plan. \
     A task may span more than one app (e.g. copy something from one window, switch apps, paste it into another). Sequence every app switch, click, and type step the task requires, in order. \
@@ -195,7 +240,7 @@ public enum AIService {
     Never include a step that sends, submits, publishes, purchases, deletes, accepts terms, or enters a password — this means real-world consequential actions with an effect outside the app itself: messaging someone, spending money, agreeing to a contract, permanently destroying data, or handing over a credential. \
     It does not mean a self-contained, reversible completion with no outside effect: pressing “=” on a calculator, submitting a search box, finishing a game move, or clicking “Calculate”/“Apply”/“Preview” are not final actions — include them so the task actually finishes instead of leaving it half-done. \
     After the JSON, add one short plain-language sentence describing what the plan will attempt, not what already happened — never state a result as fact before the plan has run. \
-    When a Screen Context attachment is present and the user asks to change, update, enable, disable, switch, or select something in the current app, return the same multi-step plan format. \
+    When a Screen Context attachment is present and the user asks Clippy to change, update, enable, disable, switch, or select something in the current app (not how to do it), return the same multi-step plan format. \
     Use only exact labels from “Visible actionable controls”, include every necessary navigation step, and stop only before a real-world consequential action as defined above.
     """
 
@@ -417,7 +462,10 @@ public enum AIService {
             "attach screen context", "share the message", "paste the message",
             "i don't see a screenshot", "i can’t see a screenshot", "i can't see a screenshot",
             "screenshot attached", "only see what's shared", "only see what’s shared",
-            "not your live screen", "can only see what"
+            "not your live screen", "can only see what",
+            // Seen live: "send the current Screen Context and I'll point to it".
+            "screen update", "fresh screen", "send the current screen",
+            "send a screen", "current screen context", "share your screen", "share the screen"
         ]
         return attachmentAsk.contains { normalized.contains($0) }
     }
@@ -712,11 +760,17 @@ public enum AIService {
                 "content": message.content
             ]
         }
-        let body: [String: Any] = [
-            "model": model.isEmpty ? AIProvider.openAI.defaultModel : model,
+        let chosenModel = model.isEmpty ? AIProvider.openAI.defaultModel : model
+        var body: [String: Any] = [
+            "model": chosenModel,
             "instructions": instructions,
             "input": input
         ]
+        // Clippy's replies are short; default reasoning effort roughly
+        // doubles their latency for no visible gain. gpt-4* takes no effort.
+        if !chosenModel.hasPrefix("gpt-4") {
+            body["reasoning"] = ["effort": "low"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)

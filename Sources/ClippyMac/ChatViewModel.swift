@@ -1,9 +1,11 @@
 import AppKit
 import ClippyCore
 import Foundation
+import os
 
 @MainActor
 final class ChatViewModel: ObservableObject {
+    static let timingLog = Logger(subsystem: "com.ar9av.clippy", category: "Timing")
     private static let terminalVoiceActionSeedKey = "didSeedTerminalVoiceAction.v1"
     @Published var messages: [ChatMessage] = []
     @Published var draft = ""
@@ -259,6 +261,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func send(_ suggestedText: String? = nil) {
+        PointingChoreographer.shared.cancel()
         var text = (suggestedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Handled ahead of the in-flight guards below so `/clear` still works
@@ -369,6 +372,7 @@ final class ChatViewModel: ObservableObject {
     /// false by the time a plan is executing (see `startRequest`), making
     /// this a silent no-op for the entire duration of any plan.
     func cancelRequest() {
+        PointingChoreographer.shared.cancel()
         guard isLoading || isRunningScreenPlan else { return }
         if isRunningScreenPlan {
             cancelPendingScreenPlan()
@@ -444,7 +448,9 @@ final class ChatViewModel: ObservableObject {
             presentation = isExpanded ? .expanded : .compact
         }
 
+        let requestStarted = ContinuousClock.now
         currentRequestTask = Task {
+            Self.timingLog.notice("request task started after \(ContinuousClock.now - requestStarted, privacy: .public)")
             // Declared outside the `do` block so the `catch` below can also
             // see it — a stream that errors out partway through must not
             // leave an empty placeholder bubble behind.
@@ -493,6 +499,7 @@ final class ChatViewModel: ObservableObject {
                     return
                 }
                 var response: String
+                let modelStarted = ContinuousClock.now
                 // Streaming only covers the plain-answer path: Anthropic,
                 // no attachments (screenshots/pasted files still go through
                 // the existing non-streaming AIService.reply, which already
@@ -527,6 +534,7 @@ final class ChatViewModel: ObservableObject {
                     )
                 }
 
+                Self.timingLog.notice("model reply: \(ContinuousClock.now - modelStarted, privacy: .public) via \(selectedProvider.rawValue, privacy: .public)")
                 // The self-correcting half of the capture gate above: the
                 // request looked self-contained, but the answer says
                 // otherwise ("I can't see your screen…"). Capture for real
@@ -602,15 +610,22 @@ final class ChatViewModel: ObservableObject {
                     )
                 }
                 let signaledInsertion = AIService.screenInsertionText(from: response)
+                // A plan request answered with bare JSON is still a plan.
                 let parsedScreenPlan = AIService.screenPlan(
-                    from: response,
+                    from: shouldBuildScreenPlan && response.trimmingCharacters(in: .whitespaces).hasPrefix("{")
+                        ? Self.withPlanMarker(response) : response,
                     bounds: capturedScreen?.windowFrame,
                     scale: capturedScreen?.screenshotScale
                 )
                 let screenDirective = AIService.screenDirective(from: response)
+                let pointing = parsedScreenPlan == nil ? AIService.pointDirectives(from: response) : nil
                 let responseWithoutDirective: String
                 if let parsedScreenPlan {
                     responseWithoutDirective = parsedScreenPlan.response
+                } else if let pointing {
+                    responseWithoutDirective = !pointing.response.isEmpty ? pointing.response
+                        : pointing.points.count > 1 ? "Follow along — \(pointing.points.count) steps."
+                        : (pointing.points.first?.caption ?? "Here.")
                 } else if let screenDirective {
                     // A directive with no trailing sentence must never fall through
                     // to the raw, marker-included response — that's how a literal
@@ -648,23 +663,45 @@ final class ChatViewModel: ObservableObject {
                 // over the generic "type into screen" heuristic — otherwise a
                 // click directive with no trailing text could get typed verbatim
                 // into the focused field instead of ever asking for confirmation.
-                if let screenDirective {
+                Self.timingLog.notice("decision: captured=\(capturedScreen != nil, privacy: .public) presentation=\(String(describing: presentation), privacy: .public) points=\(pointing?.points.count ?? 0, privacy: .public) directive=\(screenDirective.map { "\($0.kind):\($0.target)" } ?? "none", privacy: .public) plan=\(parsedScreenPlan != nil, privacy: .public)")
+                if let pointing {
+                    let steps = Self.pointingSteps(
+                        pointing.points,
+                        screen: capturedScreen,
+                        targets: ScreenAwarenessService.shared.lastTargets
+                    )
+                    Self.timingLog.notice("pointing: \(steps.count, privacy: .public) of \(pointing.points.count, privacy: .public) resolved: \(steps.map(\.caption).joined(separator: " / "), privacy: .public)")
+                    if steps.isEmpty {
+                        let message = capturedScreen == nil
+                            ? "I couldn't see your screen to point at that — try asking again."
+                            : "I couldn't find that on screen any more. Ask me to look again."
+                        screenStatus = message
+                        finishActivity(message: message)
+                    } else {
+                        startPointing(steps)
+                        screenStatus = steps.count > 1 ? "Showing you \(steps.count) steps." : "Pointing at it."
+                        finishActivity(message: screenStatus ?? "Here.")
+                    }
+                    if speakReplies { speech.speak(Self.spokenText(from: preparedResponse)) }
+                } else if let screenDirective {
+                    // A legacy GUIDE/CLICK may name a pointing id instead of a label.
+                    let directiveTarget = ScreenAwarenessService.shared.lastTargets?[screenDirective.target]
+                        .map { $0.kind == .control ? $0.text : screenDirective.target } ?? screenDirective.target
                     switch screenDirective.kind {
                     case .guide:
                         do {
-                            let target = try ScreenAwarenessService.shared.highlight(
-                                matching: screenDirective.target,
-                                instruction: preparedResponse
-                            )
-                            screenStatus = "Highlighted \(target)."
-                            finishActivity(message: "I highlighted \(target).")
+                            if capturedScreen == nil { try ScreenAwarenessService.shared.refreshSpatialMap() }
+                            let found = try ScreenAwarenessService.shared.frame(matching: directiveTarget)
+                            startPointing([.init(rect: found.rect, caption: preparedResponse.isEmpty ? found.label : preparedResponse)])
+                            screenStatus = "Pointing at \(found.label)."
+                            finishActivity(message: "Here's \(found.label).")
                         } catch {
-                            screenStatus = "Visual guidance ready."
-                            finishActivity(message: "I found the next step.")
+                            screenStatus = "I couldn't find \"\(directiveTarget)\" on screen."
+                            finishActivity(message: screenStatus ?? "I couldn't find that on screen.")
                         }
                     case .click:
                         let target = try ScreenAwarenessService.shared.highlight(
-                            matching: screenDirective.target,
+                            matching: directiveTarget,
                             instruction: preparedResponse
                         )
                         guard !AutomationSafety.isFinalAction(target) else {
@@ -992,9 +1029,12 @@ final class ChatViewModel: ObservableObject {
             "field", "toolbar", "sidebar", "desktop", "display", "monitor",
             "highlight", "click", "scroll", "select", "open", "close", "switch",
             "type", "paste", "fill", "enter", "navigate", "settings", "setting",
-            "preference", "preferences"
+            "preference", "preferences",
+            // Pointing questions: "where's the Appearance option?"
+            "point", "where", "wheres", "option", "control", "icon", "which"
         ]
         if words.contains(where: surfaces.contains) { return true }
+        if requestsScreenContext(normalized) { return true }
 
         // A bare imperative ("do it", "go", "fix", "try again") is a request
         // to act, and acting means looking.
@@ -1012,7 +1052,7 @@ final class ChatViewModel: ObservableObject {
         return false
     }
 
-    private static func requestsScreenContext(_ request: String) -> Bool {
+    nonisolated private static func requestsScreenContext(_ request: String) -> Bool {
         let normalized = request.lowercased()
         let visualHints = [
             "look at my screen", "look at the screen", "look at the current screen",
@@ -1020,9 +1060,15 @@ final class ChatViewModel: ObservableObject {
             "what's on my screen", "what is on my screen", "this screen",
             "this page", "this window", "what should i click",
             "where do i click", "show me where", "highlight",
-            "click for me", "click it", "click the"
+            "click for me", "click it", "click the", "show me", "point at", "point to"
         ]
         return visualHints.contains { normalized.contains($0) }
+    }
+
+    nonisolated static func asksToBeShown(_ normalized: String) -> Bool {
+        ["show me", "how do i", "how can i", "how to", "where is", "where's", "where are",
+         "teach me", "walk me through", "point at", "point to", "which button", "which one"]
+            .contains { normalized.contains($0) }
     }
 
     private static func requestsScreenPlan(_ request: String) -> Bool {
@@ -1030,6 +1076,10 @@ final class ChatViewModel: ObservableObject {
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
+        // "Show me how to turn on dark mode" asks to be shown, not for it to
+        // be done: that is a pointing tour. It used to match "turn on" +
+        // "dark mode" and come back as a plan to run.
+        if Self.asksToBeShown(normalized) { return false }
         let navigation = [
             "navigate", "go to", "open the", "find the", "find and",
             "click through", "take me to"
@@ -1061,6 +1111,31 @@ final class ChatViewModel: ObservableObject {
             "go there", "go for it", "take me there", "visit it", "visit that"
         ]
         return actionConfirmations.contains(normalized)
+    }
+
+    /// Fly the character over (compact mode only) and ring each step.
+    private func startPointing(_ steps: [PointingChoreographer.Step]) {
+        PointingChoreographer.shared.run(steps)
+    }
+
+    /// Point markers → rects. Ids come from this turn's capture; a raw x,y is
+    /// corrected for image-pixel mistakes and becomes a small box around it.
+    nonisolated static func pointingSteps(
+        _ points: [AIService.PointDirective],
+        screen: ScreenContext?,
+        targets: ScreenTargets?
+    ) -> [PointingChoreographer.Step] {
+        guard let screen else { return [] }
+        return points.compactMap { point in
+            switch point.target {
+            case .id(let id):
+                guard let target = targets?[id] else { return nil }
+                return .init(rect: target.rect, caption: point.caption.isEmpty ? target.text : point.caption)
+            case .point(let raw):
+                let p = CoordinateSpace.resolvedPoint(raw, windowFrame: screen.windowFrame, scale: screen.screenshotScale)
+                return .init(rect: CGRect(x: p.x - 14, y: p.y - 14, width: 28, height: 28), caption: point.caption.isEmpty ? "Here" : point.caption)
+            }
+        }
     }
 
     private static func defaultDirectiveMessage(
@@ -1337,6 +1412,7 @@ final class ChatViewModel: ObservableObject {
             pendingScreenPlan = PendingScreenPlan(summary: summary, steps: executedSteps)
             screenPlanStatuses = executedStatuses
 
+            ScreenAwarenessService.shared.moveOwnWindowsOffTarget()
             let runner = ScreenPlanRunner(performer: ScreenAwarenessService.shared)
             var failureReason: String?
             do {
@@ -1359,6 +1435,7 @@ final class ChatViewModel: ObservableObject {
                 consecutiveFailures += 1
                 failureReason = error.localizedDescription
                 lastFailureReason = failureReason
+                Self.timingLog.notice("plan step \(executedSteps.count, privacy: .public) failed: \(String(describing: error), privacy: .public) step=\(String(describing: step), privacy: .public)")
                 announce("That didn't work — \(failureReason ?? "trying a different way.")")
             }
 
@@ -1539,7 +1616,7 @@ final class ChatViewModel: ObservableObject {
             content = "You just completed: \(step.displayText). Toward the goal \"\(goal)\", using the attached current screenshot and Screen Context, decide the single next step — or say the goal already looks complete."
         }
         let followUp = ChatMessage(role: .user, content: content)
-        let response: String
+        var response: String
         do {
             response = try await AIService.reply(
                 provider: provider,
@@ -1553,6 +1630,10 @@ final class ChatViewModel: ObservableObject {
         } catch {
             return .error(error.localizedDescription)
         }
+        // This call only ever wants a plan, and gpt-5.6-luna often returns
+        // the bare JSON without the [[CLIPPY_PLAN]] prefix — which used to
+        // stop every multi-step plan after its first step.
+        response = Self.withPlanMarker(response)
         if let next = AIService.screenPlan(from: response, bounds: context.windowFrame, scale: context.screenshotScale)?.plan.steps.first {
             return .step(next)
         }
@@ -1560,6 +1641,11 @@ final class ChatViewModel: ObservableObject {
             return .stop(reason: reason)
         }
         return .error("I couldn't understand the model's next step.")
+    }
+
+    nonisolated static func withPlanMarker(_ response: String) -> String {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("[[CLIPPY_PLAN]]") ? trimmed : "[[CLIPPY_PLAN]]" + trimmed
     }
 
     func cancelPendingScreenPlan() {

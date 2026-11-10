@@ -3,6 +3,53 @@
 Notable changes per release. Versions follow [semantic versioning](https://semver.org),
 loosely — this is pre-1.0, so the minor number moves when behaviour changes.
 
+## [Unreleased]
+
+### Added
+
+- **Clippy points at things.** Ask "where's the Appearance option?" or "show
+  me how to turn on dark mode" and the character flies next to the target,
+  gestures at it and rings it, one step at a time (up to four, about two
+  seconds each, "1 of 3: …" captions), then flies home. Reduce Motion jumps
+  instead of flying.
+- **Pointing ids.** Screen Context now numbers every control (`C#`) and every
+  line (`L#`) and word (`W#`) Vision OCR reads off the active display, plus
+  what's under the mouse, so the model points by id, not by guessing a label.
+  `[[CLIPPY_POINT_AT:x,y]]` covers things with no text. The approach is from
+  [bluey-by-riley](https://github.com/rbrown101010/bluey-by-riley) (public
+  domain). Thanks!
+
+### Changed
+
+- The OpenAI provider defaults to `gpt-5.6-luna` at low reasoning effort:
+  about 1.7 s for a pointing reply, against 40+ s through the Codex CLI
+  (most of which is the CLI timing out on a model-list refresh at startup).
+
+### Fixed
+
+- Pointing questions ("where", "which icon", "show me") now take a
+  screenshot, and a reply asking for a "fresh screen" gets one and retries
+  instead of being shown.
+- A target Clippy couldn't find said "Visual guidance ready." It now says so.
+- The highlight ring landed in the wrong place on a display that doesn't
+  share the main display's top edge.
+- Multi-step plans stopped after step 1 ("couldn't understand the model's
+  next step"): the next step came back as bare JSON without its marker.
+- Plan clicks could land on Clippy's own chat window (it sat over the target)
+  or a row off in a dense list. Clippy now moves its windows beside the app
+  before each step, and clicks snap to the on-screen text that matches the
+  step's label.
+- Before a click, Clippy raised whichever app had the top window anywhere on
+  screen (say BlueStacks) instead of the app it was working in. It now raises
+  that app, and if another app's window still covers the spot, it stops and
+  says so instead of clicking into the wrong app.
+- Steps that name a label the accessibility tree can't find (System
+  Settings' sidebar rows) now fall back to the text read from the screenshot.
+- Clippy no longer sees or points at its own windows in a screenshot.
+- Captions on the highlight are sized to their text instead of cut off with
+  "…".
+- "Show me how…" / "where is…" now gets a pointing tour, not a click plan.
+
 ## [v0.2.1] — 2026-11-10
 
 ### Added

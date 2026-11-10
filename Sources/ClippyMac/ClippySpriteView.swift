@@ -41,9 +41,17 @@ enum ClippyMood: Equatable {
     case listening
     case success
     case alert
+    /// Gesturing toward something on screen, in the viewer's direction.
+    case pointing(PointDirection)
+
+    enum PointDirection: Equatable { case left, right, up, down }
 
     var animationNames: [String] {
         switch self {
+        case .pointing(.left): ["GestureLeft", "LookLeft"]
+        case .pointing(.right): ["GestureRight", "LookRight"]
+        case .pointing(.up): ["GestureUp", "LookUp"]
+        case .pointing(.down): ["GestureDown", "LookDown"]
         case .idle:
             ["Idle1_1", "IdleFingerTap", "IdleEyeBrowRaise", "IdleHeadScratch",
              "IdleSideToSide", "LookLeft", "LookRight", "RestPose"]
@@ -214,7 +222,9 @@ final class ClippyAnimationController: ObservableObject {
     private func pickAnimation(for mood: ClippyMood) -> (name: String, value: AgentAnimation)? {
         guard let animations = data?.animations else { return nil }
         let available = mood.animationNames.filter { animations[$0] != nil }
-        guard let name = available.randomElement(), let animation = animations[name] else {
+        let preferred: String?
+        if case .pointing = mood { preferred = available.first } else { preferred = available.randomElement() }
+        guard let name = preferred, let animation = animations[name] else {
             guard let fallback = animations["RestPose"] else { return nil }
             return ("RestPose", fallback)
         }
