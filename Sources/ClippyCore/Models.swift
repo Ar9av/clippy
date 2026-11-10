@@ -72,7 +72,9 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .claudeCLI: ["fable", "opus", "sonnet", "haiku"]
         case .codexCLI: ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex"]
-        case .openAI: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
+        // Measured on a real pointing prompt (Nov 2026): luna 1.7 s, 5.4-mini
+        // 2.8 s, 4.1-mini 4.4 s and it got the marker format wrong.
+        case .openAI: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1-mini"]
         case .anthropic: ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-haiku-20241022"]
         case .local: []
         }
@@ -81,7 +83,7 @@ public enum AIProvider: String, CaseIterable, Codable, Identifiable {
     public var defaultModel: String {
         switch self {
         case .claudeCLI, .codexCLI: ""
-        case .openAI: "gpt-4.1-mini"
+        case .openAI: "gpt-5.6-luna"
         case .anthropic: "claude-sonnet-4-20250514"
         case .local: ""
         }

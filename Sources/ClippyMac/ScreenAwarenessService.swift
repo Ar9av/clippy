@@ -2,6 +2,10 @@ import AppKit
 import ApplicationServices
 import ClippyCore
 import ScreenCaptureKit
+import Vision
+import os
+
+private let timingLog = Logger(subsystem: "com.ar9av.clippy", category: "Timing")
 
 @MainActor
 final class ScreenAwarenessService {
@@ -25,6 +29,11 @@ final class ScreenAwarenessService {
     /// model-supplied x/y coordinates before a click is ever dispatched.
     private var lastWindowFrame: CGRect?
     private var lastScreenshotScale: CGFloat?
+    /// Pointing ids (`C#`, `L#`, `W#`) from the most recent capture.
+    private(set) var lastTargets: ScreenTargets?
+    /// The app the most recent capture looked at. A coordinate click only
+    /// lands if this app owns the window under the point.
+    private var capturedApplication: NSRunningApplication?
 
     private init() {}
 
@@ -118,6 +127,8 @@ final class ScreenAwarenessService {
     }
 
     func captureContext() async throws -> ScreenContext {
+        let clock = ContinuousClock()
+        let entered = clock.now
         guard AXIsProcessTrusted() else {
             requestPermissions()
             throw ScreenAwarenessError.accessibilityPermission
@@ -138,6 +149,7 @@ final class ScreenAwarenessService {
         if !AutomationSafety.isRestricted(application) {
             lastExternalApplication = application
         }
+        capturedApplication = application
 
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
@@ -158,18 +170,28 @@ final class ScreenAwarenessService {
             ?? content.displays.first
         guard let anchorDisplay else { throw ScreenAwarenessError.noWindow }
 
+        let started = clock.now
         let elements = scan(application: application, limitedTo: window.frame)
+        let scanned = clock.now
         let directory = try contextDirectory()
         let identifier = UUID().uuidString
 
+        // Clippy's own balloon, character and ring are not part of what the
+        // user is asking about. Left in, OCR read the balloon's "Type your
+        // reply…" and Clippy pointed at its own text box.
+        let ownWindows = content.windows.filter {
+            $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier
+        }
         var displayShots: [DisplayShot] = []
+        var anchorImage: CGImage?
         for display in content.displays {
             let isAnchor = display.displayID == anchorDisplay.displayID
             let url = directory.appendingPathComponent(
                 "Screen-\(identifier)-\(display.displayID).png"
             )
             do {
-                let shot = try await captureDisplay(display, to: url, isAnchor: isAnchor)
+                let (shot, fullImage) = try await captureDisplay(display, to: url, isAnchor: isAnchor, excluding: ownWindows)
+                if isAnchor { anchorImage = fullImage }
                 // Anchor first, so a consumer taking one image gets the one
                 // being acted on.
                 if isAnchor { displayShots.insert(shot, at: 0) } else { displayShots.append(shot) }
@@ -191,6 +213,17 @@ final class ScreenAwarenessService {
         let otherApps = Self.otherRunningApplications(excluding: application)
         let promptLimit = 140
         let shown = ScreenElementSummary.promptOrdered(elements, limit: promptLimit)
+        let shot = clock.now
+        var textLines: [ScreenTargets.TextLine] = []
+        if let anchorImage {
+            textLines = await Self.recognizeText(in: anchorImage, displayFrame: anchorShot.frame)
+        }
+        timingLog.notice("capture: window lookup \(started - entered, privacy: .public), ax scan \(scanned - started, privacy: .public), screenshots \(shot - scanned, privacy: .public), ocr \(clock.now - shot, privacy: .public), \(elements.count) controls")
+        let targets = ScreenTargets(
+            controls: shown,
+            lines: textLines,
+            mouse: CGEvent(source: nil)?.location
+        )
         let truncationNote = elements.count > shown.count
             ? "\n…and \(elements.count - shown.count) more controls not listed. Anything you need that isn't here may simply be off screen — scroll and look again."
             : ""
@@ -215,11 +248,7 @@ final class ScreenAwarenessService {
         Other open apps (already running — prefer switching to one of these over launching a new instance, and reuse an already-open tab/document when the task fits it): \
         \(otherApps.isEmpty ? "none" : otherApps.joined(separator: ", "))
 
-        Visible actionable controls (screen coordinates, in reading order). A control's current \
-        contents appear after "=", and toggles show [checked]/[unchecked] — check these before \
-        acting, so you don't retype a field that already holds the right text or click a switch \
-        that is already on:
-        \(shown.map(\.contextLine).joined(separator: "\n"))\(truncationNote)
+        \(targets.render())\(truncationNote)
 
         Use the screenshots for appearance and this list for precise labels and positions.
         """
@@ -228,6 +257,7 @@ final class ScreenAwarenessService {
 
         lastWindowFrame = actionBounds
         lastScreenshotScale = scale
+        lastTargets = targets
 
         return ScreenContext(
             appName: application.localizedName ?? "the current app",
@@ -244,8 +274,9 @@ final class ScreenAwarenessService {
     private func captureDisplay(
         _ display: SCDisplay,
         to url: URL,
-        isAnchor: Bool
-    ) async throws -> DisplayShot {
+        isAnchor: Bool,
+        excluding ownWindows: [SCWindow]
+    ) async throws -> (DisplayShot, CGImage) {
         let screen = NSScreen.screens.first { $0.frame.intersects(display.frame) }
         let backingScale = screen?.backingScaleFactor ?? 2
         let configuration = SCStreamConfiguration()
@@ -255,9 +286,9 @@ final class ScreenAwarenessService {
         configuration.capturesAudio = false
 
         let image = try await SCScreenshotManager.captureImage(
-            // Exclude nothing: the point of a full-display shot is to show
-            // what is actually there, including windows of other apps.
-            contentFilter: SCContentFilter(display: display, excludingWindows: []),
+            // Everything but Clippy itself: the point of a full-display shot
+            // is to show what is actually there, including other apps.
+            contentFilter: SCContentFilter(display: display, excludingWindows: ownWindows),
             configuration: configuration
         )
         // See `downscaledForModel` — encoding a full 4K display at native
@@ -271,13 +302,39 @@ final class ScreenAwarenessService {
         let scale = display.frame.width > 0
             ? CGFloat(modelImage.width) / CGFloat(display.frame.width)
             : backingScale
-        return DisplayShot(
+        return (DisplayShot(
             name: screen?.localizedName ?? "Display \(display.displayID)",
             url: url,
             frame: display.frame,
             scale: scale,
             isAnchor: isAnchor
-        )
+        ), image)
+    }
+
+    /// Vision OCR on the full-resolution capture, lines and the words in
+    /// them, in global top-left points. Runs off the main actor: `.accurate`
+    /// on a Retina display takes a few hundred milliseconds.
+    nonisolated static func recognizeText(in image: CGImage, displayFrame: CGRect) async -> [ScreenTargets.TextLine] {
+        await Task.detached(priority: .userInitiated) {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            try? VNImageRequestHandler(cgImage: image).perform([request])
+            return (request.results ?? []).compactMap { observation -> ScreenTargets.TextLine? in
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                let text = candidate.string
+                var words: [(text: String, rect: CGRect)] = []
+                text.enumerateSubstrings(in: text.startIndex..., options: .byWords) { word, range, _, _ in
+                    guard let word, let box = try? candidate.boundingBox(for: range)?.boundingBox else { return }
+                    words.append((word, ScreenTargets.rect(fromVision: box, displayFrame: displayFrame)))
+                }
+                return ScreenTargets.TextLine(
+                    text: text,
+                    rect: ScreenTargets.rect(fromVision: observation.boundingBox, displayFrame: displayFrame),
+                    words: words
+                )
+            }
+        }.value
     }
 
     @discardableResult
@@ -289,6 +346,20 @@ final class ScreenAwarenessService {
             label: instruction ?? "Here — \(resolved.summary.label)"
         )
         return resolved.summary.label
+    }
+
+    /// The label and frame of the control a query resolves to, for pointing.
+    func frame(matching query: String) throws -> (label: String, rect: CGRect) {
+        let resolved = try resolve(query)
+        return (resolved.summary.label, resolved.summary.frame)
+    }
+
+    /// Rings a rect (global top-left points) that came from a pointing id
+    /// rather than a resolved control. `flyMarker` is off when the character
+    /// itself has just flown there.
+    func showPointer(around rect: CGRect, label: String, flyMarker: Bool) {
+        highlightedElementID = nil
+        highlightController.show(around: rect, label: label, flyMarker: flyMarker)
     }
 
     func clickHighlighted() throws {
@@ -476,7 +547,9 @@ final class ScreenAwarenessService {
         guard !AutomationSafety.isFinalAction(label) else {
             throw ScreenAwarenessError.unsafeAction(label)
         }
-        let point = CoordinateSpace.resolvedPoint(point, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
+        let resolved = CoordinateSpace.resolvedPoint(point, windowFrame: lastWindowFrame, scale: lastScreenshotScale)
+        let point = lastTargets?.point(forLabel: label, near: resolved) ?? resolved
+        timingLog.notice("raw click \(label, privacy: .public): \(resolved.debugDescription, privacy: .public) -> \(point.debugDescription, privacy: .public) on \(String(describing: self.lastTargets?.target(near: point)?.text), privacy: .public)")
         guard CoordinateSpace.isWithinBounds(point, windowFrame: lastWindowFrame) else {
             throw ScreenAwarenessError.targetUnavailable
         }
@@ -490,11 +563,20 @@ final class ScreenAwarenessService {
                 restrictedFrontmost.localizedName ?? "this app"
             )
         }
-        if let application = topmostExternalApplication() ?? lastExternalApplication {
-            let running = NSRunningApplication(processIdentifier: application.processIdentifier)
-            running?.activate(options: [.activateAllWindows])
-            // Activation is what we're waiting on, so wait for exactly that.
-            await waitUntil(timeout: .milliseconds(180)) { running?.isActive ?? true }
+        // The point came from a screenshot of `capturedApplication`. Raise
+        // that app, and only click if its window is really the one under the
+        // point now — the user may have switched to another app since, and a
+        // click must never land in a window Clippy didn't look at.
+        if let expected = capturedApplication {
+            await bringForward(expected)
+            if let owner = applicationOwningWindow(at: point),
+               owner.processIdentifier != expected.processIdentifier {
+                throw ScreenAwarenessError.covered(
+                    expected.localizedName ?? "that app", owner.localizedName ?? "another window"
+                )
+            }
+        } else if let running = topmostExternalApplication() ?? lastExternalApplication {
+            await bringForward(running)
         }
         highlightController.show(around: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), label: highlightLabel)
         guard let moved = CGEvent(
@@ -517,10 +599,35 @@ final class ScreenAwarenessService {
             throw ScreenAwarenessError.targetUnavailable
         }
         moved.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(60))
+        try? await Task.sleep(for: .milliseconds(60))
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         highlightController.dismiss()
+    }
+
+    /// The capture leaves Clippy's own windows out, so a step's target can
+    /// sit under the chat window, and a click or scroll there hits Clippy.
+    /// Move Clippy's windows beside the app's window, like a person would.
+    /// ponytail: no room on either side (a full-screen app) leaves them put.
+    func moveOwnWindowsOffTarget() {
+        guard let pid = (capturedApplication ?? lastExternalApplication)?.processIdentifier,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let info = windows.first(where: {
+                  ($0[kCGWindowLayer as String] as? Int ?? 0) == 0
+                      && ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+              }),
+              let dict = info[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: dict) else { return }
+        let target = ScreenHighlightController.appKitRect(bounds)
+        for window in NSApp.windows where window.isVisible && !window.ignoresMouseEvents && window.frame.intersects(target) {
+            guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { continue }
+            let width = window.frame.width + 8
+            if target.minX - visible.minX >= width {
+                window.setFrameOrigin(NSPoint(x: target.minX - width, y: window.frame.minY))
+            } else if visible.maxX - target.maxX >= width {
+                window.setFrameOrigin(NSPoint(x: target.maxX + 8, y: window.frame.minY))
+            }
+        }
     }
 
     /// Mid-sequence, a target usually doesn't exist yet: the previous click is
@@ -570,24 +677,7 @@ final class ScreenAwarenessService {
             guard !AutomationSafety.isRestricted(running) else {
                 throw ScreenAwarenessError.restrictedApp(trimmed)
             }
-            running.activate(options: [.activateAllWindows])
-            // `NSRunningApplication.activate` is unreliable when the caller
-            // isn't frontmost: recent macOS refuses focus transfers requested
-            // by a background app, and refuses them *silently*. That is how a
-            // "switch to <app>" step reported success while nothing moved —
-            // waitUntilReady's fallback only checks that a window exists, not
-            // that the app actually came forward. Re-opening the bundle is the
-            // supported way to raise an already-running app, so fall back to
-            // it whenever the direct activation didn't take.
-            await waitUntil(timeout: .milliseconds(150)) { running.isActive }
-            if !running.isActive, let bundleURL = running.bundleURL {
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                _ = try? await NSWorkspace.shared.openApplication(
-                    at: bundleURL,
-                    configuration: configuration
-                )
-            }
+            await bringForward(running)
             lastExternalApplication = running
             try await waitUntilReady(running)
             return
@@ -1208,6 +1298,42 @@ final class ScreenAwarenessService {
     /// just showing the user what's actually on their screen. See
     /// `AutomationSafety`'s doc comment — the risk it guards against is
     /// writing into a terminal, not looking at one.
+    /// The app whose window is on top at `point` (global top-left points,
+    /// the same space CGWindowList bounds use), skipping Clippy's own.
+    private func applicationOwningWindow(at point: CGPoint) -> NSRunningApplication? {
+        guard let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] else { return nil }
+        for window in windows {
+            guard (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
+                  let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  pid != ProcessInfo.processInfo.processIdentifier,
+                  let boundsDict = window[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.contains(point),
+                  let application = NSRunningApplication(processIdentifier: pid),
+                  application.activationPolicy == .regular else { continue }
+            return application
+        }
+        return nil
+    }
+
+    /// `NSRunningApplication.activate` is unreliable when the caller isn't
+    /// frontmost: recent macOS silently refuses focus transfers requested by a
+    /// background app. Re-opening the bundle is the supported way to raise an
+    /// already-running app, so fall back to it when activation didn't take.
+    private func bringForward(_ running: NSRunningApplication) async {
+        guard !running.isActive else { return }
+        running.activate(options: [.activateAllWindows])
+        await waitUntil(timeout: .milliseconds(150)) { running.isActive }
+        if !running.isActive, let bundleURL = running.bundleURL {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            _ = try? await NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration)
+            await waitUntil(timeout: .milliseconds(300)) { running.isActive }
+        }
+    }
+
     private func topmostExternalApplication(includeRestricted: Bool = false) -> NSRunningApplication? {
         guard let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
@@ -1840,7 +1966,16 @@ extension ScreenAwarenessService: ScreenStepPerforming {
     }
 
     func click(_ target: String) async throws {
-        try await runClick(matching: target)
+        do {
+            try await runClick(matching: target)
+        } catch ScreenAwarenessError.targetNotFound(let label) {
+            // Rows like System Settings' sidebar have no usable accessibility
+            // label, but the screenshot's OCR can still read them.
+            guard let point = lastTargets?.point(forLabel: label) else {
+                throw ScreenAwarenessError.targetNotFound(label)
+            }
+            try await clickAtPoint(point, label: label)
+        }
     }
 
     func click(_ target: String, at point: CGPoint) async throws {
@@ -1926,14 +2061,22 @@ private final class ScreenHighlightController {
 
     var debugPanelFrame: CGRect? { panel?.frame }
 
-    func show(around frame: CGRect, label: String) {
+    /// Global top-left rects flip to AppKit against the *primary* display's
+    /// height. Flipping against the target's own screen put the ring in the
+    /// wrong place on any display that doesn't share the primary's top edge.
+    static func appKitRect(_ rect: CGRect) -> CGRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
+    }
+
+    func show(around frame: CGRect, label: String, flyMarker: Bool = true) {
         dismiss()
-        let screenForTarget = NSScreen.screens.first(where: { $0.frame.intersects(frame) })
-        let destination = CGPoint(
-            x: frame.midX,
-            y: screenForTarget.map { $0.frame.maxY - frame.midY } ?? frame.midY
-        )
-        animateFlight(to: destination) { [weak self] in
+        let flipped = Self.appKitRect(frame)
+        guard flyMarker else {
+            showCallout(around: frame, label: label)
+            return
+        }
+        animateFlight(to: CGPoint(x: flipped.midX, y: flipped.midY)) { [weak self] in
             self?.showCallout(around: frame, label: label)
         }
     }
@@ -2032,7 +2175,8 @@ private final class ScreenHighlightController {
         // a web view, a scroll area), not a control. Ringing it paints the
         // entire screen yellow and tells the user nothing, so show a compact
         // banner near the top of that region instead.
-        let screenForTarget = NSScreen.screens.first(where: { $0.frame.intersects(frame) })
+        let flipped = Self.appKitRect(frame)
+        let screenForTarget = NSScreen.screens.first(where: { $0.frame.intersects(flipped) })
             ?? NSScreen.main
         if let screenFrame = screenForTarget?.frame,
            frame.width > screenFrame.width * 0.8,
@@ -2041,13 +2185,25 @@ private final class ScreenHighlightController {
             return
         }
 
+        // The caption used to be exactly as wide as the ring, so on a small
+        // target ("New") it truncated to "1 of 2: Cli…". It now takes the
+        // width its text needs (up to two lines), centred over the ring and
+        // kept on screen; the ring itself stays the target's size.
         let padding: CGFloat = 7
-        let labelHeight: CGFloat = 28
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let ringWidth = frame.width + padding * 2
+        let textWidth = ceil((label as NSString).size(withAttributes: [.font: font]).width) + 20
+        let captionWidth = min(max(ringWidth, textWidth), 420)
+        let labelHeight: CGFloat = textWidth > captionWidth ? 44 : 28
+        let panelWidth = max(ringWidth, captionWidth)
+        var panelX = frame.midX - panelWidth / 2
+        if let screenFrame = screenForTarget?.frame {
+            panelX = min(max(panelX, screenFrame.minX), screenFrame.maxX - panelWidth)
+        }
         let panelFrame = CGRect(
-            x: frame.minX - padding,
-            y: NSScreen.screens.first(where: { $0.frame.intersects(frame) })
-                .map { $0.frame.maxY - frame.maxY - padding } ?? frame.minY - padding,
-            width: frame.width + padding * 2,
+            x: panelX,
+            y: flipped.minY - padding,
+            width: panelWidth,
             height: frame.height + padding * 2 + labelHeight
         )
         let panel = NSPanel(
@@ -2066,10 +2222,11 @@ private final class ScreenHighlightController {
 
         let root = NSView(frame: CGRect(origin: .zero, size: panelFrame.size))
         root.wantsLayer = true
+        let ringX = frame.minX - padding - panelX
         let box = NSView(frame: CGRect(
-            x: 1,
+            x: ringX + 1,
             y: 1,
-            width: panelFrame.width - 2,
+            width: ringWidth - 2,
             height: panelFrame.height - labelHeight - 2
         ))
         box.wantsLayer = true
@@ -2079,19 +2236,21 @@ private final class ScreenHighlightController {
         box.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.09).cgColor
         root.addSubview(box)
 
-        let caption = NSTextField(labelWithString: label)
+        let caption = NSTextField(wrappingLabelWithString: label)
+        let captionX = min(max(ringX + ringWidth / 2 - captionWidth / 2, 0), panelWidth - captionWidth)
         caption.frame = CGRect(
-            x: 4,
+            x: captionX,
             y: panelFrame.height - labelHeight,
-            width: panelFrame.width - 8,
+            width: captionWidth,
             height: labelHeight
         )
         caption.alignment = .center
         caption.textColor = .black
-        caption.font = .systemFont(ofSize: 12, weight: .semibold)
+        caption.font = font
         caption.backgroundColor = .systemYellow
         caption.isBezeled = false
         caption.drawsBackground = true
+        caption.maximumNumberOfLines = 2
         caption.lineBreakMode = .byTruncatingTail
         root.addSubview(caption)
 
@@ -2108,7 +2267,7 @@ private final class ScreenHighlightController {
         let width = min(max(CGFloat(label.count) * 7.5 + 32, 180), screenFrame.width - 40)
         let bannerFrame = CGRect(
             x: frame.midX - width / 2,
-            y: screenFrame.maxY - frame.minY - height - 12,
+            y: Self.appKitRect(frame).maxY - height - 12,
             width: width,
             height: height
         )

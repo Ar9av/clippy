@@ -224,6 +224,8 @@ public enum ScreenAwarenessError: LocalizedError {
     case restrictedApp(String)
     case appNotFound(String)
     case textNotAccepted(String)
+    /// The click point is under another app's window (target, covering).
+    case covered(String, String)
 
     public var errorDescription: String? {
         switch self {
@@ -249,6 +251,8 @@ public enum ScreenAwarenessError: LocalizedError {
             "I couldn’t find an app called “\(name)”."
         case .textNotAccepted(let label):
             "“\(label)” didn’t accept the text. Click into it yourself and ask me again."
+        case .covered(let target, let covering):
+            "\(covering) is covering \(target), so I didn’t click. Bring \(target) to the front and ask me again."
         }
     }
 }
