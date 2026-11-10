@@ -3,6 +3,34 @@
 Notable changes per release. Versions follow [semantic versioning](https://semver.org),
 loosely — this is pre-1.0, so the minor number moves when behaviour changes.
 
+## [v0.2.1] — 2026-11-10
+
+### Added
+
+- **Pick your assistant.** All the classic Office characters (Clippy, Bonzi,
+  Merlin, Links, Peedy, Rocky, Rover, Genie, Genius, F1), chosen in Settings.
+- **Local Model provider** for any OpenAI-compatible server on your Mac
+  (Ollama, LM Studio, llama.cpp). Nothing leaves the machine on that path.
+- The Claude Code and Codex CLI providers can be pointed at a specific model.
+- Customisable push-to-talk shortcuts and custom voice actions.
+
+### Changed
+
+- The chat window is compacted to Office-style proportions, with property
+  sheet tabs and a Settings button in the title bar.
+
+### Fixed
+
+- The app reported version 2.0.0; the version is now stamped from the
+  release tag at build time.
+- Minimise did nothing (or sent Clippy to the Dock); it now collapses back to
+  the floating character. Minimise and Close also forget a maximised window.
+- Line breaks inside a reply were flattened in the full chat transcript.
+- Restoring from maximised scrolled the transcript back to the oldest message.
+- Typing in the chat field works again, and dictation no longer lands three
+  times or leaves the listening sprite stuck.
+- The title bar and balloon are no longer clipped off the top of the window.
+
 ## [v0.2.0] — 2026-08-09
 
 ### Added
