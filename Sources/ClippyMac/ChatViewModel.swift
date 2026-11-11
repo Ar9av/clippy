@@ -609,6 +609,11 @@ final class ChatViewModel: ObservableObject {
                         scale: capturedScreen?.screenshotScale
                     )
                 }
+                // "Look at my screen" wants an answer, not boxes: drop POINT/GUIDE
+                // markers unless the request asked to be shown where something is.
+                if !Self.asksForPointing(lastUserRequestText ?? "") {
+                    response = Self.withoutPointing(response)
+                }
                 let signaledInsertion = AIService.screenInsertionText(from: response)
                 // A plan request answered with bare JSON is still a plan.
                 let parsedScreenPlan = AIService.screenPlan(
@@ -1071,6 +1076,30 @@ final class ChatViewModel: ObservableObject {
             .contains { normalized.contains($0) }
     }
 
+    /// Whether the user asked to be shown or pointed at something, so a
+    /// pointing tour is wanted rather than a plain reply.
+    nonisolated static func asksForPointing(_ request: String) -> Bool {
+        let normalized = request.lowercased()
+        if asksToBeShown(normalized) { return true }
+        let words = Set(normalized.split { !$0.isLetter }.map(String.init))
+        return !words.isDisjoint(with: ["where", "wheres", "point", "highlight", "which", "locate", "find"])
+    }
+
+    /// The reply with POINT and GUIDE markers removed, keeping their captions
+    /// when the model wrote nothing else.
+    nonisolated static func withoutPointing(_ response: String) -> String {
+        var text = response
+        if let pointing = AIService.pointDirectives(from: text) {
+            text = pointing.response.isEmpty
+                ? pointing.points.map(\.caption).filter { !$0.isEmpty }.joined(separator: "\n")
+                : pointing.response
+        }
+        if let guide = AIService.screenDirective(from: text), guide.kind == .guide {
+            text = guide.response.isEmpty ? guide.target : guide.response
+        }
+        return text
+    }
+
     private static func requestsScreenPlan(_ request: String) -> Bool {
         let normalized = request
             .lowercased()
@@ -1208,7 +1237,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func inspectCurrentScreen() {
-        send("Look at the current screen, tell me the best next step, and highlight the relevant control.")
+        send("Look at my screen and tell me what you see and the best next step.")
     }
 
     func confirmPendingScreenAction() {

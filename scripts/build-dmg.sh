@@ -8,7 +8,8 @@ APP_DIR="$BUILD_DIR/Clippy.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 DMG_ROOT="$BUILD_DIR/dmg"
 DMG_PATH="$BUILD_DIR/Clippy-macOS-universal.dmg"
-SOURCE_ICON="$PROJECT_DIR/Resources/ClippyIcon.png"
+# Rendered by scripts/make-icon.swift (macOS icon grid, transparent corners).
+SOURCE_ICON="$PROJECT_DIR/Resources/AppIcon.png"
 ICONSET_DIR="$BUILD_DIR/Clippy.iconset"
 SWIFT_BUILD_DIR="$PROJECT_DIR/.build/apple/Products/Release"
 
@@ -56,9 +57,6 @@ if [[ ! -s "$CONTENTS_DIR/Resources/prismor-policy.json" ]]; then
     exit 1
 fi
 
-PADDED_ICON="$BUILD_DIR/clippy-square.png"
-cp "$SOURCE_ICON" "$PADDED_ICON"
-sips -p 512 512 --padColor FFFFFF "$PADDED_ICON" >/dev/null
 
 for spec in \
     "16 icon_16x16.png" \
@@ -73,7 +71,7 @@ for spec in \
     "1024 icon_512x512@2x.png"; do
     size="${spec%% *}"
     filename="${spec#* }"
-    sips -z "$size" "$size" "$PADDED_ICON" --out "$ICONSET_DIR/$filename" >/dev/null
+    sips -z "$size" "$size" "$SOURCE_ICON" --out "$ICONSET_DIR/$filename" >/dev/null
 done
 
 iconutil -c icns "$ICONSET_DIR" -o "$CONTENTS_DIR/Resources/Clippy.icns"
