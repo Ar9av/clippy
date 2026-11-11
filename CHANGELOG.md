@@ -49,6 +49,10 @@ loosely — this is pre-1.0, so the minor number moves when behaviour changes.
 - Captions on the highlight are sized to their text instead of cut off with
   "…".
 - "Show me how…" / "where is…" now gets a pointing tour, not a click plan.
+- "Look at my screen" and "what is this" get an answer in words. Clippy only
+  flies over and rings things when you ask where something is or to be shown.
+- The app icon is a rounded tile with Clippy filling it, not small art on a
+  white square.
 
 ## [v0.2.1] — 2026-11-10
 

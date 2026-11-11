@@ -146,6 +146,18 @@ final class PointingTests: XCTestCase {
         XCTAssertFalse(ChatViewModel.asksToBeShown("turn on dark mode"))
     }
 
+    func testLookAtMyScreenAnswersInsteadOfPointing() {
+        for request in ["look at my screen", "what is this", "can you see my screen?"] {
+            XCTAssertFalse(ChatViewModel.asksForPointing(request), request)
+        }
+        for request in ["where's wi-fi", "show me how to turn on dark mode", "which icon is Bluetooth", "point at the share button"] {
+            XCTAssertTrue(ChatViewModel.asksForPointing(request), request)
+        }
+        XCTAssertEqual(ChatViewModel.withoutPointing("[[CLIPPY_POINT:W2|revenue]] That's your Q3 revenue."), "That's your Q3 revenue.")
+        XCTAssertEqual(ChatViewModel.withoutPointing("[[CLIPPY_POINT:C1|Share button]]"), "Share button")
+        XCTAssertEqual(ChatViewModel.withoutPointing("Plain answer."), "Plain answer.")
+    }
+
     /// Seen live with gpt-5.6-luna: the next step came back as bare JSON and
     /// every multi-step plan stopped after step 1.
     func testBareJSONNextStepStillParses() {
