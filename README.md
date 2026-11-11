@@ -318,7 +318,7 @@ user's macOS Keychain.
     field, which is always refused — it lands on your clipboard instead and
     Clippy says so. Held while Clippy itself is frontmost, it fills Clippy's
     composer rather than another app.
-  - **Hold ⌥⇧** to send what you said to Clippy as a chat message.
+  - **Hold ⌘⇧** to send what you said to Clippy as a chat message.
 
   Both work from any app (needs Accessibility; otherwise only while Clippy
   is frontmost). Pressing any key mid-hold cancels the recording, so the
@@ -367,7 +367,7 @@ To create another action:
 The two built-in dictation routes are customizable in **Settings ▸ Dictation**:
 
 - **⌘⌥** transcribes directly into the focused app.
-- **⌥⇧** sends the transcript to Clippy as a chat message.
+- **⌘⇧** sends the transcript to Clippy as a chat message.
 
 All three shortcut types work globally when Input Monitoring is enabled and
 fall back to Clippy-only handling without it. A shortcut must be held for half

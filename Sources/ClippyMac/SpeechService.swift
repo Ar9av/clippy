@@ -50,7 +50,8 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     private let synthesizer = AVSpeechSynthesizer()
 
     // Apple streaming path.
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine = AVAudioEngine()
+    private var appleTapInstalled = false
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
@@ -125,6 +126,9 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
         } catch {
             authorizationError = "Couldn't download the \(engine.displayName) model: \(error.localizedDescription)"
         }
+        // Otherwise the VAD downloads on the first release, after the user
+        // has already finished speaking.
+        _ = await loadedVad()
     }
 
     func startListening() async {
@@ -174,7 +178,13 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
         pushToTalkTranscriptConsumed = true
         pushToTalkGeneration &+= 1
         await finishListening()
-        return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cleared in the same main-actor turn, so SwiftUI never observes the
+        // final text. Callers apply it themselves; if `onChange(of: transcript)`
+        // saw it too, it re-filled the composer after `send()` cleared it, and
+        // leaked ⌘⌥ dictation meant for another app into Clippy's chat box.
+        transcript = ""
+        return heard
     }
 
     /// Abandon a hold-to-talk session without transcribing it. Used when the
@@ -192,16 +202,20 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     /// Close the microphone and settle on a final transcript.
     ///
     /// For the batch engines this is where the actual recognition happens, so
-    /// the transcript is complete the moment this returns. Apple's path has no
-    /// such join: its callbacks hop to the main actor, so an update produced
-    /// just before the stop can still be in flight, and reading synchronously
-    /// clips the last word or two — hence the short wait, which applies only
-    /// there.
+    /// the transcript is complete the moment this returns. Apple's path ends
+    /// the audio and waits (bounded) for the recogniser's final result; the
+    /// old code cancelled the task instead, which throws away the words it
+    /// hadn't committed yet.
     private func finishListening() async {
         switch engine {
         case .appleSpeech:
+            stopAppleAudio()
+            recognitionRequest?.endAudio()
+            // The final-result callback clears `recognitionTask`.
+            for _ in 0..<40 where recognitionTask != nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
             stopListening()
-            try? await Task.sleep(for: .milliseconds(250))
         case .whisper, .parakeet:
             await finishBatchListening()
         }
@@ -233,25 +247,38 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
             return
         }
 
+        // Fresh engine per session: a long-lived one keeps the input format of
+        // whatever mic was default when it was made, and installing a tap with
+        // that stale format after switching to AirPods etc. throws.
+        audioEngine = AVAudioEngine()
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            authorizationError = DictationRecorderError.noInputDevice.localizedDescription
+            return
+        }
+
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         recognitionRequest = request
 
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             request.append(buffer)
             let level = Self.amplitude(of: buffer)
             Task { @MainActor in self?.audioLevel = level }
         }
+        appleTapInstalled = true
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor in
+                // Callbacks from a previous session (its cancel error, a late
+                // final result) must not touch — or stop — the current one.
+                guard let self, self.recognitionRequest === request else { return }
                 if let result {
-                    self?.transcript = result.bestTranscription.formattedString
-                    if result.isFinal { self?.stopListening() }
+                    self.transcript = result.bestTranscription.formattedString
+                    if result.isFinal { self.stopListening() }
                 }
-                if error != nil { self?.stopListening() }
+                if error != nil { self.stopListening() }
             }
         }
 
@@ -385,13 +412,29 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
         // A fresh decoder state per utterance: holds are independent, and
         // carrying state across them lets one dictation bias the next.
         var decoderState = try TdtDecoderState()
-        let result = try await parakeet.transcribe(samples, decoderState: &decoderState)
+        // FluidAudio throws `invalidAudioData` under 0.3 s, which a one-word
+        // "yes" can be once the VAD trims it. It zero-pads internally anyway,
+        // so padding here costs nothing.
+        let minimum = Int(DictationRecorder.sampleRate * 0.5)
+        let padded = samples.count < minimum
+            ? samples + [Float](repeating: 0, count: minimum - samples.count)
+            : samples
+        let result = try await parakeet.transcribe(padded, decoderState: &decoderState)
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Model loading
 
+    /// A hold during the launch warm-up used to start a second, concurrent
+    /// download and load of the same model. Wait for the one in flight.
+    private func waitForInFlightModelLoad() async {
+        while isPreparingModel {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
     private func ensureWhisperLoaded() async throws -> WhisperKit {
+        await waitForInFlightModelLoad()
         if let whisperKit { return whisperKit }
 
         isPreparingModel = true
@@ -408,6 +451,7 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     }
 
     private func ensureParakeetLoaded() async throws -> AsrManager {
+        await waitForInFlightModelLoad()
         if let parakeet { return parakeet }
 
         isPreparingModel = true
@@ -444,10 +488,7 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
     /// session is abandoned (chord cancelled, engine switched) rather than
     /// completed — the completing path is `finishListening()`.
     func stopListening() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
+        stopAppleAudio()
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionRequest = nil
@@ -457,6 +498,15 @@ final class SpeechService: NSObject, ObservableObject, @preconcurrency AVSpeechS
 
         isListening = false
         audioLevel = 0
+    }
+
+    /// Removes the tap whether or not the engine got as far as running: a tap
+    /// left behind by a failed `start()` made the next `installTap` crash.
+    private func stopAppleAudio() {
+        guard appleTapInstalled else { return }
+        appleTapInstalled = false
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
     }
 
     @discardableResult

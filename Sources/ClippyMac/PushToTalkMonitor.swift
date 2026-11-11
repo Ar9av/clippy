@@ -7,13 +7,13 @@ enum DictationRoute: CaseIterable {
     /// Hold ⌘⌥ — type into whatever editable field is focused in the
     /// frontmost app, falling back to the clipboard.
     case focusedApp
-    /// Hold ⌥⇧ — send the transcript to Clippy as a chat message.
+    /// Hold ⌘⇧ — send the transcript to Clippy as a chat message.
     case clippy
 
     var modifiers: NSEvent.ModifierFlags {
         switch self {
         case .focusedApp: [.command, .option]
-        case .clippy: [.option, .shift]
+        case .clippy: [.command, .shift]
         }
     }
 }
@@ -37,7 +37,7 @@ struct DictationShortcut: Codable, Equatable, Hashable, Sendable {
     var modifiers: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: modifiersRawValue) }
 
     static let focusedAppDefault = DictationShortcut(keyCode: nil, modifiersRawValue: NSEvent.ModifierFlags([.command, .option]).rawValue)
-    static let clippyDefault = DictationShortcut(keyCode: nil, modifiersRawValue: NSEvent.ModifierFlags([.option, .shift]).rawValue)
+    static let clippyDefault = DictationShortcut(keyCode: nil, modifiersRawValue: NSEvent.ModifierFlags([.command, .shift]).rawValue)
 
     var displayName: String {
         let names: [(NSEvent.ModifierFlags, String)] = [(.command, "⌘"), (.option, "⌥"), (.shift, "⇧"), (.control, "⌃")]
@@ -109,6 +109,11 @@ final class PushToTalkMonitor {
     /// Without this, every ordinary ⌘⌥- or ⌥⇧-prefixed shortcut in any app
     /// (⌘⌥I, ⌥⇧K, ⌘⌥Esc) would flick the microphone open on its way to the
     /// real shortcut.
+    /// Only these take part in a chord. `deviceIndependentFlagsMask` also
+    /// carries Caps Lock, fn and numeric-pad, so Caps Lock being on — or any
+    /// F-key/arrow, which macOS tags with .function — made chords never match.
+    private static let chordMask: NSEvent.ModifierFlags = [.command, .option, .shift, .control]
+
     private static let holdThreshold = Duration.milliseconds(500)
 
     private let shortcut: (DictationRoute) -> DictationShortcut
@@ -216,6 +221,13 @@ final class PushToTalkMonitor {
             else { heldModifiers.remove(changed) }
         }
         if event.type == .keyUp {
+            // Key let go inside the half-second hold: don't engage after the
+            // fact with nothing left to end the session but a modifier release.
+            if let armingRoute, shortcut(for: armingRoute).keyCode == event.keyCode {
+                armingTask?.cancel()
+                armingTask = nil
+                self.armingRoute = nil
+            }
             if let engagedRoute, matches(event, route: engagedRoute) {
                 self.engagedRoute = nil
                 stop(engagedRoute)
@@ -313,15 +325,15 @@ final class PushToTalkMonitor {
     /// Exact match, so ⌘⌥⇧ and ⌘⌥⌃ chords (which belong to other shortcuts)
     /// don't count as push-to-talk.
     private func route(for flags: NSEvent.ModifierFlags, keyCode: UInt16? = nil) -> DictationRoute? {
-        let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        let normalized = flags.intersection(Self.chordMask)
         return DictationRoute.allCases.first {
             let configured = shortcut(for: $0)
-            return configured.modifiers == normalized && configured.keyCode == keyCode
+            return configured.modifiers.intersection(Self.chordMask) == normalized && configured.keyCode == keyCode
         }
     }
 
     private func route(for event: NSEvent) -> DictationRoute? {
-        route(for: event.modifierFlags.intersection(.deviceIndependentFlagsMask), keyCode: event.keyCode)
+        route(for: event.modifierFlags, keyCode: event.keyCode)
     }
 
     private func shortcut(for route: DictationRoute) -> DictationShortcut { shortcut(route) }
@@ -331,7 +343,7 @@ final class PushToTalkMonitor {
     }
 
     private func matchesModifiers(_ flags: NSEvent.ModifierFlags, route: DictationRoute) -> Bool {
-        flags.intersection(.deviceIndependentFlagsMask) == shortcut(for: route).modifiers
+        flags.intersection(Self.chordMask) == shortcut(for: route).modifiers.intersection(Self.chordMask)
     }
 
     private func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {

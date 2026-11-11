@@ -57,7 +57,7 @@ final class DictationRecorder {
         }
     }
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let sink = Sink()
     private var isRunning = false
 
@@ -71,6 +71,10 @@ final class DictationRecorder {
     func start() throws {
         stop()
 
+        // Fresh engine per hold: a reused one keeps the format of the mic that
+        // was default when it was built, and goes dead or throws after the
+        // input device changes (AirPods connecting, a USB mic unplugged).
+        engine = AVAudioEngine()
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         // A zero sample rate means no usable input device — starting the

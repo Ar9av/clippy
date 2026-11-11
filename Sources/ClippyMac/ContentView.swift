@@ -1456,7 +1456,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(RetroButtonStyle(minWidth: 24))
                     .listeningPulse(isActive: speech.isListening)
-                    .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌥⇧ to ask \(viewModel.character.title)")
+                    .help(speech.isListening ? "Stop dictation" : "Dictate — or hold ⌘⌥ to type into any app, ⌘⇧ to ask \(viewModel.character.title)")
                     .animation(.easeOut(duration: 0.16), value: speech.isListening)
                 }
 
@@ -2254,7 +2254,10 @@ struct SettingsView: View {
                             Button(dictationTestActive ? "Stop microphone" : "Test microphone") {
                                 Task {
                                     if dictationTestActive {
-                                        _ = await speech.endPushToTalk()
+                                        // endPushToTalk no longer leaves the text
+                                        // for onChange to pick up; show it here.
+                                        let heard = await speech.endPushToTalk()
+                                        if !heard.isEmpty { viewModel.draft = heard }
                                         dictationTestActive = false
                                     } else {
                                         await speech.beginPushToTalk()

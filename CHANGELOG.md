@@ -21,6 +21,7 @@ loosely — this is pre-1.0, so the minor number moves when behaviour changes.
 
 ### Changed
 
+- Hold **⌘⇧** (was ⌥⇧) to ask Clippy by voice.
 - The OpenAI provider defaults to `gpt-5.6-luna` at low reasoning effort:
   about 1.7 s for a pointing reply, against 40+ s through the Codex CLI
   (most of which is the CLI timing out on a model-list refresh at startup).
@@ -53,6 +54,15 @@ loosely — this is pre-1.0, so the minor number moves when behaviour changes.
   flies over and rings things when you ask where something is or to be shown.
 - The app icon is a rounded tile with Clippy filling it, not small art on a
   white square.
+- Dictation with Parakeet or Whisper put the sent message back in the chat
+  box, and ⌘⌥ dictation into another app also landed in Clippy's chat box.
+- Apple dictation dropped the last words on release, and a late reply from
+  one hold could stop the next.
+- Dictation broke after switching microphones (AirPods, USB mics).
+- One-word dictations on Parakeet failed with "Dictation failed".
+- Holding the shortcut during launch no longer loads the model twice, and the
+  voice-detection model loads at startup, not after your first hold.
+- Shortcuts didn't fire with Caps Lock on, and F-key shortcuts never stopped.
 
 ## [v0.2.1] — 2026-11-10
 
