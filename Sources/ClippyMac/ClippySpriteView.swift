@@ -231,6 +231,7 @@ final class ClippyAnimationController: ObservableObject {
                 guard generation == self.playbackGeneration else { return }
                 guard let animation = self.pickAnimation(for: activeMood) else { return }
                 self.currentAnimation = animation.name
+                ChatViewModel.timingLog.debug("sprite: \(String(describing: activeMood), privacy: .public) -> \(animation.name, privacy: .public)")
 
                 for frame in animation.value.frames {
                     guard !Task.isCancelled, generation == self.playbackGeneration else { return }
