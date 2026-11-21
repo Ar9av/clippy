@@ -33,6 +33,17 @@ public enum SystemPrompt {
     one-off detail of the task at hand, and never something you were already told in "What you know about this user".
     """
 
+    /// Lets the model pick how Clippy reacts to its own reply, so the sprite
+    /// plays a matching reaction instead of the same generic "talking" loop
+    /// for every answer. Leading, not trailing, so the reaction starts the
+    /// moment a streamed reply does. Stripped like the memory marker — see
+    /// `AIService.extractFeeling`.
+    public static let feelingInstruction = """
+    Start every reply with [[CLIPPY_FEEL: one of \(ClippyFeeling.allCases.map(\.rawValue).joined(separator: ", "))]] \
+    for how you honestly feel about it — it drives your animation and is never shown. Most replies are "neutral"; \
+    save the others for when the moment clearly earns them.
+    """
+
     public static let text = """
     \(persona) \
     You can help with writing, brainstorming, explaining, planning, debugging, and everyday questions. \

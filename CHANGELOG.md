@@ -7,6 +7,19 @@ loosely — this is pre-1.0, so the minor number moves when behaviour changes.
 
 ### Added
 
+- **Clippy reacts to its own replies.** The model opens each answer with a
+  hidden `[[CLIPPY_FEEL: …]]` marker (happy, excited, curious, confused, sad,
+  surprised, proud, or neutral) and the character plays a matching reaction,
+  on every bundled character, the moment a streamed reply starts. The last
+  feeling keeps tinting idle fidgets for a few minutes.
+- **Calmer idling.** Idle fidgets now rest a few seconds on the rest pose
+  between animations instead of playing back to back.
+
+### Fixed
+
+- Streamed replies no longer flash a half-written `[[CLIPPY_REMEMBER…` or
+  `[[CLIPPY_FEEL…` marker in the balloon before it is stripped.
+
 - **Clippy points at things.** Ask "where's the Appearance option?" or "show
   me how to turn on dark mode" and the character flies next to the target,
   gestures at it and rings it, one step at a time (up to four, about two

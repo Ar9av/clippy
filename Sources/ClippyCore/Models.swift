@@ -408,3 +408,11 @@ public enum ClippyError: LocalizedError {
         }
     }
 }
+
+/// How Clippy feels about its own reply, chosen by the model through the
+/// `[[CLIPPY_FEEL: …]]` marker and played back as a sprite reaction. A
+/// short fixed list on purpose: every case has to map to real animations
+/// on every bundled character.
+public enum ClippyFeeling: String, CaseIterable, Codable, Sendable {
+    case neutral, happy, excited, curious, confused, sad, surprised, proud
+}

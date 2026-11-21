@@ -18,6 +18,10 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var activityMessage = ""
     @Published private(set) var activityElapsed = 0
     @Published private(set) var recentlyCompleted = false
+    /// The reaction the model picked for its latest reply, held just long
+    /// enough for the sprite to play it.
+    @Published private(set) var feeling: ClippyFeeling?
+    private var feelingTask: Task<Void, Never>?
     @Published private(set) var recentSessions: [CodingSession] = []
     @Published private(set) var chatHistory: [ArchivedChatSession] = []
     /// Durable facts about the user, carried across chats and relaunches.
@@ -392,6 +396,7 @@ final class ChatViewModel: ObservableObject {
     ) {
         isLoading = true
         recentlyCompleted = false
+        feeling = nil
         errorMessage = nil
         activityElapsed = 0
         activityMessage = attachments.isEmpty
@@ -599,6 +604,11 @@ final class ChatViewModel: ObservableObject {
                         response = "I can’t find an open conversation on screen."
                     }
                 }
+                // After the screen-reply retry, so a retried reply's marker
+                // is stripped too — before any marker/plan parsing below.
+                let felt = AIService.extractFeeling(from: response)
+                response = felt.response
+                react(felt.feeling)
                 try Task.checkCancellation()
                 var screenReplyPoint: CGPoint?
                 if shouldDraftScreenReply, let target = AIService.screenReplyTarget(from: response) {
@@ -830,13 +840,20 @@ final class ChatViewModel: ObservableObject {
 
         let client = AnthropicClient(apiKey: apiKey)
         var accumulated = ""
+        var reacted = false
         for try await event in client.stream(request) {
             try Task.checkCancellation()
             switch event {
             case .textDelta(let delta):
                 accumulated += delta
+                // React the moment the leading marker closes, while the
+                // rest of the answer is still arriving.
+                if !reacted, let feeling = AIService.extractFeeling(from: accumulated).feeling {
+                    react(feeling)
+                    reacted = true
+                }
                 if messages.indices.contains(index) {
-                    messages[index].content = accumulated
+                    messages[index].content = AIService.streamingDisplayText(accumulated)
                 }
             case .completed(let response):
                 if !response.text.isEmpty { accumulated = response.text }
@@ -877,6 +894,19 @@ final class ChatViewModel: ObservableObject {
             try? await Task.sleep(for: .seconds(1.8))
             guard !Task.isCancelled else { return }
             recentlyCompleted = false
+        }
+    }
+
+    /// Neutral replies keep the ordinary talking/success animation; only a
+    /// real feeling earns its own reaction.
+    private func react(_ newFeeling: ClippyFeeling?) {
+        guard let newFeeling, newFeeling != .neutral else { return }
+        feeling = newFeeling
+        feelingTask?.cancel()
+        feelingTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            feeling = nil
         }
     }
 
@@ -1662,7 +1692,7 @@ final class ChatViewModel: ObservableObject {
         // This call only ever wants a plan, and gpt-5.6-luna often returns
         // the bare JSON without the [[CLIPPY_PLAN]] prefix — which used to
         // stop every multi-step plan after its first step.
-        response = Self.withPlanMarker(response)
+        response = Self.withPlanMarker(AIService.extractFeeling(from: response).response)
         if let next = AIService.screenPlan(from: response, bounds: context.windowFrame, scale: context.screenshotScale)?.plan.steps.first {
             return .step(next)
         }

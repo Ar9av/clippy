@@ -80,6 +80,9 @@ struct ContentView: View {
 
     private var clippyMood: ClippyMood {
         if speech.isListening { return .listening }
+        // Before `.thinking`: a streamed reply reacts while it's still
+        // arriving, and isLoading stays true until the stream ends.
+        if let feeling = viewModel.feeling { return .feeling(feeling) }
         // isLoading only covers the initial chat request — a running or
         // retrying screen plan (including the decide-next-step follow-up
         // calls between actions) is a separate flag, and without this check

@@ -1,4 +1,5 @@
 import AppKit
+import ClippyCore
 import ImageIO
 import SwiftUI
 
@@ -43,11 +44,21 @@ enum ClippyMood: Equatable {
     case alert
     /// Gesturing toward something on screen, in the viewer's direction.
     case pointing(PointDirection)
+    /// A one-shot reaction the model picked for its own reply.
+    case feeling(ClippyFeeling)
 
     enum PointDirection: Equatable { case left, right, up, down }
 
+    /// Reactions play once and settle back to idle rather than looping for
+    /// as long as the mood is held.
+    var isOneShot: Bool {
+        if case .feeling = self { return true }
+        return false
+    }
+
     var animationNames: [String] {
         switch self {
+        case .feeling(let feeling): Self.reactions(for: feeling)
         case .pointing(.left): ["GestureLeft", "LookLeft"]
         case .pointing(.right): ["GestureRight", "LookRight"]
         case .pointing(.up): ["GestureUp", "LookUp"]
@@ -67,6 +78,21 @@ enum ClippyMood: Equatable {
             ["Congratulate", "Wave", "GetArtsy"]
         case .alert:
             ["Alert", "GetAttention", "LookDown"]
+        }
+    }
+
+    /// Candidates span both sprite families (Clippy-style and Peedy-style
+    /// names); `pickAnimation` keeps whichever the current character has.
+    static func reactions(for feeling: ClippyFeeling) -> [String] {
+        switch feeling {
+        case .neutral: ["Explain", "Acknowledge", "GestureRight"]
+        case .happy: ["Pleased", "Wave", "GetArtsy", "Congratulate"]
+        case .excited: ["Congratulate", "GetWizardy", "DoMagic1", "Celebrity", "GetAttention"]
+        case .curious: ["IdleEyeBrowRaise", "LookUp", "Searching", "Thinking"]
+        case .confused: ["Confused", "Uncertain", "IdleHeadScratch", "DontRecognize", "IdleScratch", "IdleLowersBrows", "LookUpLeft"]
+        case .sad: ["Sad", "Embarrassed", "LookDown", "Decline"]
+        case .surprised: ["Surprised", "Alert", "GetAttention"]
+        case .proud: ["Congratulate", "GetTechy", "Pleased", "CharacterSucceeds"]
         }
     }
 }
@@ -122,8 +148,20 @@ final class ClippyAnimationController: ObservableObject {
     func setMood(_ newMood: ClippyMood) {
         guard newMood != mood else { return }
         mood = newMood
-        play(newMood)
+        if case .feeling(let feeling) = newMood {
+            lingeringFeeling = (feeling, .now)
+        }
+        play(newMood, returnTo: newMood.isOneShot ? .idle : nil)
     }
+
+    /// The last reaction keeps tinting idle fidgets for a few minutes, so a
+    /// good exchange leaves Clippy a little brighter and a rough one a little
+    /// quieter, instead of snapping straight back to a blank slate.
+    private var lingeringFeeling: (feeling: ClippyFeeling, at: ContinuousClock.Instant)?
+    private static let lingerDuration = Duration.seconds(180)
+    /// Pause on the rest pose between idle fidgets. Back-to-back idles read
+    /// as restless; a beat of stillness is what makes the next one charming.
+    private static let idlePause = Duration.seconds(6)
 
     /// Swaps the sprite sheet/atlas and replays a greeting on the new
     /// character, mirroring `start()`. A no-op when the character hasn't
@@ -176,9 +214,7 @@ final class ClippyAnimationController: ObservableObject {
 
         data = decoded
         sheet = image
-        if let rest = decoded.animations["RestPose"]?.frames.first {
-            render(rest)
-        }
+        renderRestPose()
     }
 
     private func play(_ requestedMood: ClippyMood, returnTo: ClippyMood? = nil) {
@@ -215,13 +251,24 @@ final class ClippyAnimationController: ObservableObject {
                     activeMood = returnTo
                     self.mood = returnTo
                 }
+                if activeMood == .idle {
+                    guard generation == self.playbackGeneration else { return }
+                    self.renderRestPose()
+                    try? await Task.sleep(for: Self.idlePause)
+                }
             }
         }
     }
 
     private func pickAnimation(for mood: ClippyMood) -> (name: String, value: AgentAnimation)? {
         guard let animations = data?.animations else { return nil }
-        let available = mood.animationNames.filter { animations[$0] != nil }
+        var candidates = mood.animationNames
+        if mood == .idle, let lingering = lingeringFeeling, lingering.feeling != .neutral,
+           ContinuousClock.now - lingering.at < Self.lingerDuration,
+           Int.random(in: 0..<3) == 0 {
+            candidates = ClippyMood.reactions(for: lingering.feeling)
+        }
+        let available = candidates.filter { animations[$0] != nil }
         let preferred: String?
         if case .pointing = mood { preferred = available.first } else { preferred = available.randomElement() }
         guard let name = preferred, let animation = animations[name] else {
@@ -229,6 +276,10 @@ final class ClippyAnimationController: ObservableObject {
             return ("RestPose", fallback)
         }
         return (name, animation)
+    }
+
+    private func renderRestPose() {
+        if let rest = data?.animations["RestPose"]?.frames.first { render(rest) }
     }
 
     private func render(_ animationFrame: AgentFrame) {

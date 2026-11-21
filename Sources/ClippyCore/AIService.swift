@@ -204,6 +204,7 @@ public enum AIService {
     \(SystemPrompt.persona) \
     You can help with writing, brainstorming, explaining, planning, debugging, and everyday questions. \
     \(SystemPrompt.memoryInstruction) \
+    \(SystemPrompt.feelingInstruction) \
     Clippy can insert text into the last editable field the user focused. When the user asks you to type, enter, paste, \
     put, place, fill, or write finished text in another app, in a prompt, in a text box, “here,” or “on the app,” \
     respond with [[CLIPPY_TYPE]] as the first characters, followed only by the exact text to insert. \
@@ -269,6 +270,38 @@ public enum AIService {
             withTemplate: ""
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         return (fact.isEmpty ? nil : fact, stripped)
+    }
+
+    private static let feelingMarkerPattern = #"\[\[CLIPPY_FEEL:([^\]]*)\]\]"#
+
+    /// Splits the model's chosen reaction off a reply. Like the memory
+    /// marker, every occurrence is removed even when the feeling itself is
+    /// unknown, so a made-up emotion never leaks into the balloon.
+    public static func extractFeeling(from response: String) -> (feeling: ClippyFeeling?, response: String) {
+        guard let regex = try? NSRegularExpression(pattern: feelingMarkerPattern) else {
+            return (nil, response)
+        }
+        let range = NSRange(response.startIndex..., in: response)
+        guard let match = regex.firstMatch(in: response, range: range),
+              let valueRange = Range(match.range(at: 1), in: response) else {
+            return (nil, response)
+        }
+        let value = response[valueRange].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let stripped = regex.stringByReplacingMatches(in: response, range: range, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (ClippyFeeling(rawValue: value), stripped)
+    }
+
+    /// What a half-streamed reply can safely show: complete feel/memory
+    /// markers removed, and a trailing marker that hasn't closed yet hidden
+    /// until it does, so "[[CLIPPY_FE" never flashes in the balloon.
+    public static func streamingDisplayText(_ partial: String) -> String {
+        var text = extractMemory(from: extractFeeling(from: partial).response).response
+        if let open = text.range(of: "[[", options: .backwards),
+           !text[open.upperBound...].contains("]]") {
+            text = String(text[..<open.lowerBound])
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public static func screenInsertionText(from response: String) -> String? {
