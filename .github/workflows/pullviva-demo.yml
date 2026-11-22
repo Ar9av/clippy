@@ -1,0 +1,14 @@
+# Stand-in for the PullViva GitHub App while it is not deployed: posts a failing "PullViva" check
+# exactly as the app does for a first-time contributor. Demo branch only.
+name: PullViva
+on:
+  pull_request:
+    branches: [pullviva-demo-base]
+jobs:
+  pullviva:
+    name: PullViva
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error title=PullViva::Answer a few questions about this PR (about 3 min) at https://pullviva.com/q/Ar9av/clippy/${{ github.event.pull_request.number }}"
+          exit 1

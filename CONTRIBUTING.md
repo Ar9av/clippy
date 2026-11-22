@@ -74,3 +74,5 @@ succeeded and what failed. Include it, along with your macOS version and which
 provider you're using.
 
 Security issues go to [SECURITY.md](SECURITY.md) instead of the issue tracker.
+
+Before opening a PR, run `swift test` and describe in your own words what the change does and why.
